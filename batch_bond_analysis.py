@@ -80,11 +80,12 @@ def get_bond_metadata_raw(symbol, session=None):
                 r_search = requests.post(search_url, data=search_payload, headers=headers, timeout=15)
                 
             if r_search.status_code == 421:
-                # print(f"Throttled (421) for {symbol}, retrying...")
-                time.sleep(5) # 遇到 421 多等一会
+                tqdm.write(f"警告: {symbol} 触发 421 频率限制 (连接过多)，正在重试...")
+                time.sleep(10) # 触发 421 时强制等待更久
                 continue
                 
             if r_search.status_code != 200:
+                tqdm.write(f"失败: {symbol} 搜索接口返回状态码 {r_search.status_code}")
                 return None
                 
             search_json = r_search.json()
@@ -116,6 +117,7 @@ def get_bond_metadata_raw(symbol, session=None):
                 r_detail = requests.post(detail_url, data=detail_payload, headers=detail_headers, timeout=15)
                 
             if r_detail.status_code != 200:
+                tqdm.write(f"失败: {symbol} 详情接口返回状态码 {r_detail.status_code}")
                 continue
             
             res_json = r_detail.json()
@@ -133,7 +135,7 @@ def get_bond_metadata_raw(symbol, session=None):
             }
             return metadata
         except Exception as e:
-            # print(f"Error fetching {symbol}: {e}")
+            tqdm.write(f"异常: {symbol} 抓取过程中出现错误: {e}")
             time.sleep(2)
             continue
     return None
