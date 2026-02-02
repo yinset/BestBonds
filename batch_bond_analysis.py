@@ -15,10 +15,10 @@ import random
 # 配置
 CACHE_FILE = "bond_metadata_cache.csv"
 OUTPUT_FILE = "bond_analysis_results.xlsx"
-CONCURRENT_THREADS = 10
-SAVE_INTERVAL = 50
-RETRY_COUNT = 3
-DELAY_BETWEEN_REQUESTS = 2.0 
+CONCURRENT_THREADS = 1
+SAVE_INTERVAL = 10
+RETRY_COUNT = 5
+DELAY_BETWEEN_REQUESTS = 5.0 
 
 USER_AGENTS = [
     # Chrome on Windows
@@ -58,14 +58,12 @@ def save_cache_to_file(cache_dict):
 
 def get_bond_metadata_raw(symbol, session=None):
     """
-    底层获取债券元数据的逻辑，手动处理请求以绕过 AKShare 的 JSON 解析错误
+    底层获取债券元数据的逻辑，增加反爬措施
     """
     for attempt in range(RETRY_COUNT):
         try:
-            # 0. 预处理符号
             search_symbol = symbol.replace(" ", "")
             
-            # 1. 获取查询代码 (BondMarketInfoList2)
             search_url = "https://www.chinamoney.com.cn/ags/ms/cm-u-bond-md/BondMarketInfoList2"
             search_payload = {
                 "pageNo": "1",
@@ -80,39 +78,44 @@ def get_bond_metadata_raw(symbol, session=None):
                 "entyDefinedCode": "",
                 "rtngShrt": "",
             }
+            
+            ua = random.choice(USER_AGENTS)
             headers = {
-                "User-Agent": random.choice(USER_AGENTS),
+                "User-Agent": ua,
                 "Accept": "application/json, text/javascript, */*; q=0.01",
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 "X-Requested-With": "XMLHttpRequest",
                 "Origin": "https://www.chinamoney.com.cn",
-                "Referer": "https://www.chinamoney.com.cn/chinese/zqjc/"
+                "Referer": "https://www.chinamoney.com.cn/chinese/zqjc/",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
             }
             
-            # 增加随机抖动
-            time.sleep(DELAY_BETWEEN_REQUESTS + random.random() * 2) 
+            # 增加更长的随机延迟
+            sleep_time = DELAY_BETWEEN_REQUESTS + random.uniform(2.0, 5.0) * (attempt + 1)
+            time.sleep(sleep_time) 
             
-            if session:
-                r_search = session.post(search_url, data=search_payload, headers=headers, timeout=15)
-            else:
-                r_search = requests.post(search_url, data=search_payload, headers=headers, timeout=15)
+            caller = session if session else requests
+            r_search = caller.post(search_url, data=search_payload, headers=headers, timeout=20)
                 
-            if r_search.status_code == 421:
-                tqdm.write(f"警告: {symbol} 触发 421 频率限制 (连接过多)，正在重试...")
-                time.sleep(10) # 触发 421 时强制等待更久
+            if r_search.status_code in [403, 421]:
+                wait_time = 30 * (attempt + 1)
+                tqdm.write(f"警告: {symbol} 触发访问限制 ({r_search.status_code})，第 {attempt+1} 次尝试，等待 {wait_time} 秒...")
+                time.sleep(wait_time)
                 continue
                 
             if r_search.status_code != 200:
                 tqdm.write(f"失败: {symbol} 搜索接口返回状态码 {r_search.status_code}")
-                return None
+                continue
                 
             search_json = r_search.json()
             result_list = search_json.get('data', {}).get('resultList', [])
             if not result_list:
                 return None
                 
-            # 匹配最接近的简称
             query_code = None
             for res in result_list:
                 if res.get('bondName').replace(" ", "") == search_symbol:
@@ -128,12 +131,10 @@ def get_bond_metadata_raw(symbol, session=None):
             detail_headers = headers.copy()
             detail_headers["Referer"] = f"https://www.chinamoney.com.cn/chinese/zqjc/?bondDefinedCode={query_code}"
             
-            time.sleep(1.0 + random.random())
+            # 模拟人的操作间隔
+            time.sleep(random.uniform(1.5, 3.0))
             
-            if session:
-                r_detail = session.post(detail_url, data=detail_payload, headers=detail_headers, timeout=15)
-            else:
-                r_detail = requests.post(detail_url, data=detail_payload, headers=detail_headers, timeout=15)
+            r_detail = caller.post(detail_url, data=detail_payload, headers=detail_headers, timeout=20)
                 
             if r_detail.status_code != 200:
                 tqdm.write(f"失败: {symbol} 详情接口返回状态码 {r_detail.status_code}")
@@ -154,8 +155,8 @@ def get_bond_metadata_raw(symbol, session=None):
             }
             return metadata
         except Exception as e:
-            tqdm.write(f"异常: {symbol} 抓取过程中出现错误: {e}")
-            time.sleep(2)
+            tqdm.write(f"异常: {symbol} 抓取错误: {e}")
+            time.sleep(5)
             continue
     return None
 
