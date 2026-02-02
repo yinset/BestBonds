@@ -60,6 +60,14 @@ def get_bond_metadata_raw(symbol, session=None):
                 "pageNo": "1",
                 "pageSize": "15",
                 "bondName": search_symbol,
+                "bondCode": "",
+                "issueEnty": "",
+                "bondType": "",
+                "bondSpclPrjctVrty": "",
+                "couponType": "",
+                "issueYear": "",
+                "entyDefinedCode": "",
+                "rtngShrt": "",
             }
             headers = {
                 "User-Agent": random.choice(USER_AGENTS),
