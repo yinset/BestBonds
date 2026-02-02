@@ -47,12 +47,19 @@ def save_cache_to_file(cache_dict):
         return
     with cache_lock:
         try:
-            df = pd.DataFrame(list(cache_dict.values()))
-            # 确保 symbol 列存在
-            if not df.empty and 'symbol' in df.columns:
-                df.to_csv(CACHE_FILE, index=False)
-            elif not df.empty:
-                print("警告: 缓存数据中缺失 'symbol' 列，跳过保存。")
+            # 确保每个 metadata 字典里都有 symbol 字段
+            # 如果是从 cache_df.set_index('symbol', drop=False).to_dict('index') 出来的，
+            # 里面已经包含了 symbol。这里做个双重保险。
+            data_list = []
+            for symbol, meta in cache_dict.items():
+                if 'symbol' not in meta:
+                    meta['symbol'] = symbol
+                data_list.append(meta)
+                
+            df = pd.DataFrame(data_list)
+            if not df.empty:
+                # 使用 utf-8-sig 以便 Excel 打开不乱码，且能正确处理中文
+                df.to_csv(CACHE_FILE, index=False, encoding='utf-8-sig')
         except Exception as e:
             print(f"保存缓存失败: {e}")
 
@@ -233,10 +240,18 @@ def main():
     if os.path.exists(CACHE_FILE):
         print(f"2. 正在加载本地缓存 {CACHE_FILE}...")
         try:
-            cache_df = pd.read_csv(CACHE_FILE)
+            # 使用 utf-8-sig 处理可能存在的 BOM 头
+            cache_df = pd.read_csv(CACHE_FILE, encoding='utf-8-sig')
             if not cache_df.empty and 'symbol' in cache_df.columns:
-                # 核心修复：去重后再转字典，防止 set_index 报错
-                cache = cache_df.drop_duplicates(subset=['symbol']).set_index('symbol').to_dict('index')
+                # 核心修复：
+                # 1. 过滤掉 symbol 为空或 NaN 的行
+                cache_df = cache_df.dropna(subset=['symbol'])
+                # 2. 去重，保留最后一次出现的记录（假设最新的在后面）
+                cache_df = cache_df.drop_duplicates(subset=['symbol'], keep='last')
+                # 3. set_index 时保留 symbol 列 (drop=False)，
+                #    否则转 dict('index') 后 value 中会缺少 'symbol' 字段，
+                #    导致后面代码用到 meta['symbol'] 时报错或逻辑判断失效
+                cache = cache_df.set_index('symbol', drop=False).to_dict('index')
                 print(f"已加载 {len(cache)} 条债券元数据缓存。")
             else:
                 print("2. 缓存文件格式异常，将开始全新抓取。")
@@ -273,7 +288,7 @@ def main():
                     # 每处理 SAVE_INTERVAL 个，执行一次保存
                     if processed_count % SAVE_INTERVAL == 0:
                         save_cache_to_file(cache)
-                        tqdm.write(f"已处理 {processed_count} 个，当前缓存成功 {len(cache)} 个债券数据。")
+                        tqdm.write(f"已处理 {processed_count} 个 (本次成功: {success_count}, 失败: {processed_count - success_count})，当前总缓存: {len(cache)} 条。")
                 except Exception as e:
                     pass
         
