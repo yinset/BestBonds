@@ -293,6 +293,15 @@ def main():
         meta = cache.get(symbol)
         
         res_row = row.to_dict()
+        
+        # 格式化交易量并附加单位
+        if '交易量' in res_row and not pd.isna(res_row['交易量']):
+             vol = res_row['交易量']
+             # 如果是整数则去掉小数点
+             if isinstance(vol, (float, np.float64)) and vol.is_integer():
+                 vol = int(vol)
+             res_row['交易量'] = f"{vol}万"
+
         if meta:
             y_val = row['加权收益率'] if not pd.isna(row['加权收益率']) else row['最新收益率']
             
@@ -386,7 +395,7 @@ def main():
          '加权收益率': '加权收益率',
          '最新收益率': '最新收益率',
          '成交净价': '成交净价',
-         '交易量': '成交量(万)',
+         '交易量': '交易量',
          '成交时间': '成交时间'
      }
      
