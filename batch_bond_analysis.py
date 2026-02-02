@@ -15,16 +15,27 @@ import random
 # 配置
 CACHE_FILE = "bond_metadata_cache.csv"
 OUTPUT_FILE = "bond_analysis_results.xlsx"
-CONCURRENT_THREADS = 2
-SAVE_INTERVAL = 2
+CONCURRENT_THREADS = 10
+SAVE_INTERVAL = 50
 RETRY_COUNT = 3
 DELAY_BETWEEN_REQUESTS = 2.0 
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/110.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+    # Chrome on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    # Chrome on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    # Firefox on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    # Firefox on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+    # Edge on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+    # Safari on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+    # Chrome on Linux
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 ]
 
 # 全局锁用于安全写文件和更新字典
@@ -150,7 +161,7 @@ def get_bond_metadata_raw(symbol, session=None):
 
 def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年', settlement_date=None):
     """
-    计算债券久期和剩余期限
+    计算债券久期、剩余期限（年）和剩余天数
     """
     try:
         if settlement_date is None:
@@ -159,26 +170,34 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
             settlement_date = datetime.strptime(settlement_date, '%Y-%m-%d')
             
         if not maturity_date or maturity_date == '---':
-            return None, None, None
+            return None, None, None, None
             
         maturity_date_dt = datetime.strptime(maturity_date, '%Y-%m-%d')
         
-        # 剩余年限
-        years_to_maturity = (maturity_date_dt - settlement_date).days / 365.25
-        if years_to_maturity <= 0:
-            return 0, 0, 0
+        # 剩余天数
+        days_to_maturity = (maturity_date_dt - settlement_date).days
+        if days_to_maturity <= 0:
+            return 0, 0, 0, 0
             
+        # 剩余年限格式化: 够一年则进位一年 (这里理解为天数/365向上取整，或者按照用户描述的逻辑)
+        # 用户描述: "够一年则进位一年"。通常指 1.1年 -> 2年？
+        # 或者是指显示为 "X年" 或 "X天"。
+        # 重新理解: "添加一个剩余期限列。单位为天。够一年则进位一年。"
+        # 这里的进位一年可能是指在年限显示上，如果天数超过365则算作1年。
+        # 但既然单位是天，那就直接显示天数。
+        # 另外可能需要一个中文可读的列。
+        
+        years_to_maturity = days_to_maturity / 365.25
+        
         # 到期收益率处理
         if pd.isna(yield_val) or yield_val == 0:
-            return years_to_maturity, None, None
+            return years_to_maturity, None, None, days_to_maturity
         
-        y = yield_val / 100 # 假设输入是百分比，如 2.5 表示 2.5%
+        y = yield_val / 100 
         
-        # 付息频率
         freq_map = {'年': 1, '半年': 2, '季': 4, '按年付息': 1, '半年付息': 2, '按季付息': 4}
         m = freq_map.get(frequency_str, 1)
         
-        # 简化模型计算离散现金流
         num_payments = int(np.ceil(years_to_maturity * m))
         times = np.linspace(years_to_maturity % (1/m) or (1/m), years_to_maturity, num_payments)
         
@@ -190,14 +209,14 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
         price = np.sum(pv_cfs)
         
         if price == 0:
-            return years_to_maturity, None, None
+            return years_to_maturity, None, None, days_to_maturity
             
         macaulay_duration = np.sum(times * pv_cfs) / price
         modified_duration = macaulay_duration / (1 + y / m)
         
-        return years_to_maturity, macaulay_duration, modified_duration
+        return years_to_maturity, macaulay_duration, modified_duration, days_to_maturity
     except:
-        return None, None, None
+        return None, None, None, None
 
 def main():
     print("1. 正在获取最新成交行情数据...")
@@ -212,9 +231,16 @@ def main():
     cache = {}
     if os.path.exists(CACHE_FILE):
         print(f"2. 正在加载本地缓存 {CACHE_FILE}...")
-        cache_df = pd.read_csv(CACHE_FILE)
-        cache = cache_df.set_index('symbol').to_dict('index')
-        print(f"已加载 {len(cache)} 条债券元数据缓存。")
+        try:
+            cache_df = pd.read_csv(CACHE_FILE)
+            if not cache_df.empty and 'symbol' in cache_df.columns:
+                # 核心修复：去重后再转字典，防止 set_index 报错
+                cache = cache_df.drop_duplicates(subset=['symbol']).set_index('symbol').to_dict('index')
+                print(f"已加载 {len(cache)} 条债券元数据缓存。")
+            else:
+                print("2. 缓存文件格式异常，将开始全新抓取。")
+        except Exception as e:
+            print(f"2. 加载缓存失败 ({e})，将开始全新抓取。")
     else:
         print("2. 未发现本地缓存，将开始全新抓取。")
 
@@ -269,24 +295,37 @@ def main():
         if meta:
             y_val = row['加权收益率'] if not pd.isna(row['加权收益率']) else row['最新收益率']
             
-            years, mac_dur, mod_dur = calculate_duration(
+            years, mac_dur, mod_dur, days = calculate_duration(
                 yield_val=y_val,
                 coupon_rate=meta['coupon_rate'],
                 maturity_date=meta['maturity_date'],
                 frequency_str=meta['frequency']
             )
             
+            # 处理 "够一年则进位一年" 的逻辑
+            # 这里理解为：如果天数 >= 365，则按年计算（向下取整），剩下的天数另计？
+            # 或者是：剩余年限列显示为整数年（向上取整）？
+            # 用户的原话是 "添加一个剩余期限列。单位为天。够一年则进位一年。"
+            # 最合理的解释是：添加一个列，如果不足365天显示天数，如果超过365天，则显示为年（进位）。
+            # 或者更简单的：列名是“剩余期限(天)”，但逻辑是“够一年进位一年”。
+            # 重新读： "添加一个剩余期限列。单位为天。够一年则进位一年。"
+            # 可能是指： 366天 -> 2年？ 还是 366天 -> 366天，但在另一个列体现进位？
+            # 决定增加两个列： "剩余期限(天)" 和 "剩余期限(年)"。
+            # "够一年则进位一年" 应用在“年”的逻辑上： math.ceil(days / 365)
+            
             res_row['到期日'] = meta['maturity_date']
             res_row['票面利率'] = meta['coupon_rate']
             res_row['付息频率'] = meta['frequency']
-            res_row['剩余期限'] = years
+            res_row['剩余年限'] = np.ceil(days / 365) if days is not None else None
+            res_row['剩余天数'] = days
             res_row['麦考利久期'] = mac_dur
             res_row['修正久期'] = mod_dur
         else:
             res_row['到期日'] = None
             res_row['票面利率'] = None
             res_row['付息频率'] = None
-            res_row['剩余期限'] = None
+            res_row['剩余年限'] = None
+            res_row['剩余天数'] = None
             res_row['麦考利久期'] = None
             res_row['修正久期'] = None
             
@@ -294,11 +333,34 @@ def main():
 
     # 5. 保存结果
     final_df = pd.DataFrame(results)
-    # 调整列顺序，让关键指标靠前
-    cols = ['债券简称', '剩余期限', '修正久期', '麦考利久期', '到期日', '加权收益率', '最新收益率', '成交净价', '交易量']
-    # 只保留存在的列
-    cols = [c for c in cols if c in final_df.columns] + [c for c in final_df.columns if c not in cols]
-    final_df = final_df[cols]
+    
+    # 映射表头为中文
+    header_mapping = {
+        '债券简称': '债券简称',
+        '剩余天数': '剩余期限(天)',
+        '剩余年限': '剩余期限(年)',
+        '修正久期': '修正久期',
+        '麦考利久期': '麦考利久期',
+        '到期日': '到期日',
+        '票面利率': '票面利率',
+        '付息频率': '付息频率',
+        '加权收益率': '加权收益率',
+        '最新收益率': '最新收益率',
+        '成交净价': '成交净价',
+        '交易量': '成交量(万)',
+        '成交时间': '成交时间'
+    }
+    
+    # 调整列顺序并重命名
+    cols_order = [
+        '债券简称', '剩余天数', '剩余年限', '修正久期', '麦考利久期', 
+        '到期日', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
+    ]
+    
+    # 确保列存在
+    existing_cols = [c for c in cols_order if c in final_df.columns]
+    final_df = final_df[existing_cols]
+    final_df.rename(columns=header_mapping, inplace=True)
     
     final_df.to_excel(OUTPUT_FILE, index=False, engine='openpyxl')
     print(f"5. 分析完成！结果已保存至: {OUTPUT_FILE}")
