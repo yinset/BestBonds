@@ -220,10 +220,27 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
         return None, None, None, None
 
 def main():
-    print("1. 正在获取最新成交行情数据...")
+    print("1. 正在获取上一交易日成交行情数据...")
     try:
-        deal_df = ak.bond_spot_deal()
-        print(f"成功获取 {len(deal_df)} 条成交记录。")
+        # 获取最新的成交数据
+        full_df = ak.bond_spot_deal()
+        
+        # 识别上一交易日：由于数据包含成交时间，我们取数据中最大的日期作为当前交易日，
+        # 然后取比它小的最大日期作为上一交易日。
+        if not full_df.empty and '成交时间' in full_df.columns:
+            full_df['成交日期'] = pd.to_datetime(full_df['成交时间']).dt.date
+            sorted_dates = sorted(full_df['成交日期'].unique(), reverse=True)
+            
+            if len(sorted_dates) >= 2:
+                last_trade_date = sorted_dates[1]
+                deal_df = full_df[full_df['成交日期'] == last_trade_date].copy()
+                print(f"检测到多个交易日，已筛选上一交易日 ({last_trade_date}) 的数据，共 {len(deal_df)} 条。")
+            else:
+                deal_df = full_df
+                print(f"数据中仅包含一个交易日 ({sorted_dates[0]})，直接使用该日数据，共 {len(deal_df)} 条。")
+        else:
+            deal_df = full_df
+            print(f"成功获取 {len(deal_df)} 条成交记录。")
     except Exception as e:
         print(f"获取行情失败: {e}")
         return
@@ -322,6 +339,16 @@ def main():
             res_row['麦考利久期'] = mac_dur
             res_row['修正久期'] = mod_dur
 
+            # 格式化成交量，添加“万”单位
+            if '交易量' in res_row and not pd.isna(res_row['交易量']):
+                try:
+                    vol_val = float(res_row['交易量'])
+                    res_row['成交量_格式化'] = f"{vol_val}万"
+                except:
+                    res_row['成交量_格式化'] = res_row['交易量']
+            else:
+                res_row['成交量_格式化'] = None
+
             # 计算税后收益率
             # 国债和地方政府债免除20%的利息所得税。其他的债券需要上缴。
             # 地方债判断逻辑：bond_type包含"地方政府债" 或者 债券简称(symbol)中包含省份/城市地名关键词
@@ -365,6 +392,7 @@ def main():
             res_row['剩余天数'] = None
             res_row['麦考利久期'] = None
             res_row['修正久期'] = None
+            res_row['成交量_格式化'] = None
             res_row['税后收益率'] = None
             
         results.append(res_row)
@@ -386,14 +414,14 @@ def main():
          '加权收益率': '加权收益率',
          '最新收益率': '最新收益率',
          '成交净价': '成交净价',
-         '交易量': '成交量(万)',
+         '成交量_格式化': '成交量(万)',
          '成交时间': '成交时间'
      }
      
      # 调整列顺序并重命名
     cols_order = [
          '债券简称', '剩余天数', '剩余期限_格式化', '税后收益率', '修正久期', '麦考利久期', 
-         '到期日', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
+         '到期日', '加权收益率', '最新收益率', '成交净价', '成交量_格式化', '成交时间'
      ]
     
     # 确保列存在
