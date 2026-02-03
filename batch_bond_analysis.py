@@ -19,6 +19,7 @@ CONCURRENT_THREADS = 1
 SAVE_INTERVAL = 10
 RETRY_COUNT = 5
 DELAY_BETWEEN_REQUESTS = 5.0 
+SETTLEMENT_DATE = None  # 截止日期 (结算日)，例如 "2024-02-04"，若为 None 则使用当天
 FETCH_ALL_METADATA = False  # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
 USER_AGENTS = [
     # Chrome on Windows
@@ -174,8 +175,12 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
     try:
         if settlement_date is None:
             settlement_date = datetime.now()
-        else:
+        elif isinstance(settlement_date, str):
             settlement_date = datetime.strptime(settlement_date, '%Y-%m-%d')
+            
+        # 统一处理为日期，避免时间差导致的计算偏差
+        if hasattr(settlement_date, 'replace'):
+            settlement_date = settlement_date.replace(hour=0, minute=0, second=0, microsecond=0)
             
         if not maturity_date or maturity_date == '---':
             return None, None, None, None
@@ -331,7 +336,8 @@ def main():
                 yield_val=y_val,
                 coupon_rate=meta['coupon_rate'],
                 maturity_date=meta['maturity_date'],
-                frequency_str=meta['frequency']
+                frequency_str=meta['frequency'],
+                settlement_date=SETTLEMENT_DATE
             )
             
             # 处理 "够一年则进位一年" 的逻辑：366天 -> 1年1天
