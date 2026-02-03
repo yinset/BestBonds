@@ -326,7 +326,7 @@ def main():
             years, mac_dur, mod_dur, days = calculate_duration(
                 yield_val=y_val,
                 coupon_rate=meta['coupon_rate'],
-                maturity_date=meta['mat     urity_date'],
+                maturity_date=meta['maturity_date'],
                 frequency_str=meta['frequency']
             )
             
