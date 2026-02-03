@@ -231,6 +231,11 @@ def main():
     try:
         deal_df = ak.bond_spot_deal()
         print(f"成功获取 {len(deal_df)} 条成交记录。")
+        
+        # 过滤成交量：仅保留成交量大于等于 10 亿元的债券
+        if '交易量' in deal_df.columns:
+            deal_df = deal_df[deal_df['交易量'] >= 10]
+            print(f"经过成交量筛选（>= 10亿元），剩余 {len(deal_df)} 条记录。")
     except Exception as e:
         print(f"获取行情失败: {e}")
         return
@@ -314,11 +319,10 @@ def main():
         # 格式化交易量
         if '交易量' in res_row and not pd.isna(res_row['交易量']):
              vol = res_row['交易量']
-             # 如果是整数则去掉小数点
+             # 如果是整数则去掉小数点，保持数值类型以方便筛选
              if isinstance(vol, (float, np.float64)) and vol.is_integer():
                  vol = int(vol)
-             # 根据用户反馈，该接口返回的成交量单位是亿元
-             res_row['交易量'] = f"{vol}亿元"
+             res_row['交易量'] = vol
 
         if meta:
             y_val = row['加权收益率'] if not pd.isna(row['加权收益率']) else row['最新收益率']
@@ -374,41 +378,92 @@ def main():
             
         results.append(res_row)
 
-    # 5. 保存结果
+    # 5. 分类并导出
+    print("5. 正在对债券进行分类并排序...")
     final_df = pd.DataFrame(results)
-    
-    # 映射表头为中文
+    if final_df.empty:
+        print("未发现符合条件的债券数据。")
+        return
+
+    # 定义列映射和顺序
     header_mapping = {
-         '债券简称': '债券简称',
-         '债券类型': '债券类型',
-         '剩余天数': '剩余天数',
-         '剩余期限_格式化': '剩余期限',
-         '修正久期': '修正久期',
-         '麦考利久期': '麦考利久期',
-         '税后收益率': '税后收益率',
-         '到期日': '到期日',
-         '票面利率': '票面利率',
-         '付息频率': '付息频率',
-         '加权收益率': '加权收益率',
-         '最新收益率': '最新收益率',
-         '成交净价': '成交净价',
-        '交易量': '成交额',
+        '债券简称': '债券简称',
+        '债券类型': '债券类型',
+        '剩余天数': '剩余天数',
+        '剩余期限_格式化': '剩余期限',
+        '修正久期': '修正久期',
+        '麦考利久期': '麦考利久期',
+        '税后收益率': '税后收益率',
+        '到期日': '到期日',
+        '票面利率': '票面利率',
+        '付息频率': '付息频率',
+        '加权收益率': '加权收益率',
+        '最新收益率': '最新收益率',
+        '成交净价': '成交净价',
+        '交易量': '成交额(亿元)',
         '成交时间': '成交时间'
-     }
-     
-     # 调整列顺序并重命名
+    }
+    
     cols_order = [
-         '债券简称', '债券类型', '剩余天数', '剩余期限_格式化', '税后收益率', '修正久期', '麦考利久期', 
-         '到期日', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
-     ]
+        '债券简称', '债券类型', '剩余天数', '剩余期限_格式化', '税后收益率', '修正久期', '麦考利久期', 
+        '到期日', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
+    ]
+
+    def process_sheet_df(df):
+        # 确保列存在并按序排列
+        existing_cols = [c for c in cols_order if c in df.columns]
+        df_sorted = df[existing_cols].copy()
+        # 按税后收益率倒序排序
+        if '税后收益率' in df_sorted.columns:
+            df_sorted.sort_values('税后收益率', ascending=False, inplace=True)
+        # 重命名表头
+        df_sorted.rename(columns=header_mapping, inplace=True)
+        return df_sorted
+
+    # 分类逻辑
+    # 免税债：国债和地方政府债
+    # 久期：短 (<= 0.5), 长 (>= 5), 中 (其他)
     
-    # 确保列存在
-    existing_cols = [c for c in cols_order if c in final_df.columns]
-    final_df = final_df[existing_cols]
-    final_df.rename(columns=header_mapping, inplace=True)
-    
-    final_df.to_excel(OUTPUT_FILE, index=False, engine='openpyxl')
-    print(f"5. 分析完成！结果已保存至: {OUTPUT_FILE}")
+    is_tax_free = final_df['债券类型'].isin(['国债', '地方政府债'])
+    is_short = final_df['修正久期'] <= 0.5
+    is_long = final_df['修正久期'] >= 5
+    is_mid = (~is_short) & (~is_long)
+
+    # 准备各 Sheet 数据
+    sheets_data = {
+        "免税债": final_df[is_tax_free],
+        "其他债": final_df[~is_tax_free],
+        "全部债券": final_df
+    }
+
+    # 细分免税债
+    tax_free_df = sheets_data["免税债"]
+    short_tax_free = tax_free_df[tax_free_df['修正久期'] <= 0.5]
+    mid_tax_free = tax_free_df[(tax_free_df['修正久期'] > 0.5) & (tax_free_df['修正久期'] < 5)]
+    long_tax_free = tax_free_df[tax_free_df['修正久期'] >= 5]
+
+    # 细分其他债
+    other_df = sheets_data["其他债"]
+    short_other = other_df[other_df['修正久期'] <= 0.5]
+    mid_other = other_df[(other_df['修正久期'] > 0.5) & (other_df['修正久期'] < 5)]
+    long_other = other_df[other_df['修正久期'] >= 5]
+
+    with pd.ExcelWriter(OUTPUT_FILE, engine='openpyxl') as writer:
+        # 按照用户最新要求，短期、中期、长期完全分开分 Sheet
+        # 1. 免税债系列
+        process_sheet_df(short_tax_free).to_excel(writer, sheet_name='短免税债', index=False)
+        process_sheet_df(mid_tax_free).to_excel(writer, sheet_name='中免税债', index=False)
+        process_sheet_df(long_tax_free).to_excel(writer, sheet_name='长免税债', index=False)
+        
+        # 2. 其他债系列
+        process_sheet_df(short_other).to_excel(writer, sheet_name='短其他债', index=False)
+        process_sheet_df(mid_other).to_excel(writer, sheet_name='中其他债', index=False)
+        process_sheet_df(long_other).to_excel(writer, sheet_name='长其他债', index=False)
+        
+        # 3. 全部汇总
+        process_sheet_df(final_df).to_excel(writer, sheet_name='全部债券', index=False)
+
+    print(f"5. 分析完成！结果已保存至: {OUTPUT_FILE} (共 7 个 Sheet)")
 
 if __name__ == "__main__":
     main()
