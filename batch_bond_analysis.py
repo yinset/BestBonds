@@ -19,7 +19,8 @@ CONCURRENT_THREADS = 1
 SAVE_INTERVAL = 10
 RETRY_COUNT = 5
 DELAY_BETWEEN_REQUESTS = 5.0 
-
+FETCH_ALL_METADATA = False  # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
+证券交易所
 USER_AGENTS = [
     # Chrome on Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -261,61 +262,88 @@ def main():
         print("2. 未发现本地缓存，将开始全新抓取。")
 
     # 3. 筛选需要更新元数据的债券
-    symbols_to_fetch = [s for s in deal_df['债券简称'].unique() if s not in cache]
-    
-    if symbols_to_fetch:
-        print(f"3. 发现 {len(symbols_to_fetch)} 个新债券，正在抓取元数据（并发数: {CONCURRENT_THREADS}）...")
-        processed_count = 0
-        success_count = 0
-        session = requests.Session()
-        # 预访问首页
-        try:
-            session.get("https://www.chinamoney.com.cn/chinese/zqjc/", timeout=15)
-        except:
-            pass
-            
-        with ThreadPoolExecutor(max_workers=CONCURRENT_THREADS) as executor:
-            future_to_symbol = {executor.submit(get_bond_metadata_raw, s, session): s for s in symbols_to_fetch}
-            for future in tqdm(as_completed(future_to_symbol), total=len(symbols_to_fetch)):
-                symbol = future_to_symbol[future]
-                processed_count += 1
-                try:
-                    data = future.result()
-                    if data:
-                        cache[symbol] = data
-                        success_count += 1
-                    
-                    # 每处理 SAVE_INTERVAL 个，执行一次保存
-                    if processed_count % SAVE_INTERVAL == 0:
-                        save_cache_to_file(cache)
-                        tqdm.write(f"已处理 {processed_count} 个 (本次成功: {success_count}, 失败: {processed_count - success_count})，当前总缓存: {len(cache)} 条。")
-                except Exception as e:
-                    pass
+    if FETCH_ALL_METADATA:
+        symbols_to_fetch = [s for s in deal_df['债券简称'].unique() if s not in cache]
         
-        # 最终保存一次
-        save_cache_to_file(cache)
-        print(f"缓存已更新，当前共计 {len(cache)} 条记录。")
+        if symbols_to_fetch:
+            print(f"3. 发现 {len(symbols_to_fetch)} 个新债券，正在抓取元数据（并发数: {CONCURRENT_THREADS}）...")
+            processed_count = 0
+            success_count = 0
+            session = requests.Session()
+            # 预访问首页
+            try:
+                session.get("https://www.chinamoney.com.cn/chinese/zqjc/", timeout=15)
+            except:
+                pass
+                
+            with ThreadPoolExecutor(max_workers=CONCURRENT_THREADS) as executor:
+                future_to_symbol = {executor.submit(get_bond_metadata_raw, s, session): s for s in symbols_to_fetch}
+                for future in tqdm(as_completed(future_to_symbol), total=len(symbols_to_fetch)):
+                    symbol = future_to_symbol[future]
+                    processed_count += 1
+                    try:
+                        data = future.result()
+                        if data:
+                            cache[symbol] = data
+                            success_count += 1
+                        
+                        # 每处理 SAVE_INTERVAL 个，执行一次保存
+                        if processed_count % SAVE_INTERVAL == 0:
+                            save_cache_to_file(cache)
+                            tqdm.write(f"已处理 {processed_count} 个 (本次成功: {success_count}, 失败: {processed_count - success_count})，当前总缓存: {len(cache)} 条。")
+                    except Exception as e:
+                        pass
+            
+            # 最终保存一次
+            save_cache_to_file(cache)
+            print(f"缓存已更新，当前共计 {len(cache)} 条记录。")
+        else:
+            print("3. 所有债券元数据均已在缓存中。")
     else:
-        print("3. 所有债券元数据均已在缓存中。")
+        print("3. 跳过元数据抓取，直接使用本地缓存进行分析。")
 
     # 4. 计算指标
     print("4. 正在计算剩余期限及久期...")
     results = []
-    today_str = datetime.now().strftime('%Y-%m-%d')
     
+    # 地方债关键词识别逻辑：国债和地方政府债免利息税
+    # 定义地名关键词，用于识别地方债（包含省级行政区、简称、计划单列市及部分核心城市）
+    loc_keywords = [
+        '北京', '京', '天津', '津', '河北', '冀', '山西', '晋', '内蒙古', '蒙', 
+        '辽宁', '辽', '吉林', '吉', '黑龙江', '黑', '上海', '沪', '江苏', '苏', 
+        '浙江', '浙', '安徽', '皖', '福建', '闽', '江西', '赣', '山东', '鲁', 
+        '河南', '豫', '湖北', '鄂', '湖南', '湘', '广东', '粤', '广西', '桂', 
+        '海南', '琼', '重庆', '渝', '四川', '川', '蜀', '贵州', '黔', '贵', 
+        '云南', '滇', '云', '西藏', '藏', '陕西', '陕', '秦', '甘肃', '甘', '陇', 
+        '青海', '青', '宁夏', '宁', '新疆', '新', '兵团', '深圳', '深', '大连', 
+        '青岛', '宁波', '厦门', '苏州', '无锡', '常州', '南通', '扬州', '镇江', 
+        '泰州', '徐州', '连云港', '淮安', '盐城', '宿迁', '杭州', '嘉兴', '湖州', 
+        '绍兴', '金华', '衢州', '舟山', '台州', '丽水', '合肥', '芜湖', '蚌埠', 
+        '淮南', '马鞍山', '淮北', '铜陵', '安庆', '黄山', '滁州', '阜阳', '宿州', 
+        '六安', '亳州', '池州', '宣城', '福州', '泉州', '漳州', '莆田', '三明', 
+        '南平', '龙岩', '宁德', '济南', '淄博', '枣庄', '东营', '烟台', '潍坊', 
+        '济宁', '泰安', '威海', '日照', '临沂', '德州', '聊城', '滨州', '菏泽', 
+        '广州', '韶关', '珠海', '汕头', '佛山', '江门', '湛江', '茂名', '肇庆', 
+        '惠州', '梅州', '汕尾', '河源', '阳江', '清远', '东莞', '中山', '潮州', 
+        '揭阳', '云浮', '南宁', '柳州', '桂林', '梧州', '北海', '防城港', '钦州', 
+        '贵港', '玉林', '百色', '贺州', '河池', '来宾', '崇左', '成都', '绵阳', 
+        '自贡', '攀枝花', '泸州', '德阳', '广元', '遂宁', '内江', '乐山', '南充', 
+        '宜宾', '广安', '达州', '眉山', '雅安', '巴中', '资阳', '阿坝', '甘孜', '凉山'
+    ]
+
     for _, row in deal_df.iterrows():
         symbol = row['债券简称']
         meta = cache.get(symbol)
         
         res_row = row.to_dict()
         
-        # 格式化交易量并附加单位
+        # 格式化交易量
         if '交易量' in res_row and not pd.isna(res_row['交易量']):
              vol = res_row['交易量']
-             # 如果是整数则去掉小数点
+             # 如果是整数则去掉小数点，保持数值类型
              if isinstance(vol, (float, np.float64)) and vol.is_integer():
                  vol = int(vol)
-             res_row['交易量'] = f"{vol}万"
+             res_row['交易量'] = vol
 
         if meta:
             y_val = row['加权收益率'] if not pd.isna(row['加权收益率']) else row['最新收益率']
@@ -345,35 +373,12 @@ def main():
             res_row['剩余天数'] = days
             res_row['麦考利久期'] = mac_dur
             res_row['修正久期'] = mod_dur
+            res_row['债券类型'] = meta.get('bond_type', '未知')
 
             # 计算税后收益率
             # 国债和地方政府债免除20%的利息所得税。其他的债券需要上缴。
             # 地方债判断逻辑：bond_type包含"地方政府债" 或者 债券简称(symbol)中包含省份/城市地名关键词
             bond_type = meta.get('bond_type', '')
-            
-            # 定义地名关键词，用于识别地方债（包含省级行政区、简称、计划单列市及部分核心城市）
-            loc_keywords = [
-                 '北京', '京', '天津', '津', '河北', '冀', '山西', '晋', '内蒙古', '蒙', 
-                 '辽宁', '辽', '吉林', '吉', '黑龙江', '黑', '上海', '沪', '江苏', '苏', 
-                 '浙江', '浙', '安徽', '皖', '福建', '闽', '江西', '赣', '山东', '鲁', 
-                 '河南', '豫', '湖北', '鄂', '湖南', '湘', '广东', '粤', '广西', '桂', 
-                 '海南', '琼', '重庆', '渝', '四川', '川', '蜀', '贵州', '黔', '贵', 
-                 '云南', '滇', '云', '西藏', '藏', '陕西', '陕', '秦', '甘肃', '甘', '陇', 
-                 '青海', '青', '宁夏', '宁', '新疆', '新', '兵团', '深圳', '深', '大连', 
-                 '青岛', '宁波', '厦门', '苏州', '无锡', '常州', '南通', '扬州', '镇江', 
-                 '泰州', '徐州', '连云港', '淮安', '盐城', '宿迁', '杭州', '嘉兴', '湖州', 
-                 '绍兴', '金华', '衢州', '舟山', '台州', '丽水', '合肥', '芜湖', '蚌埠', 
-                 '淮南', '马鞍山', '淮北', '铜陵', '安庆', '黄山', '滁州', '阜阳', '宿州', 
-                 '六安', '亳州', '池州', '宣城', '福州', '泉州', '漳州', '莆田', '三明', 
-                 '南平', '龙岩', '宁德', '济南', '淄博', '枣庄', '东营', '烟台', '潍坊', 
-                 '济宁', '泰安', '威海', '日照', '临沂', '德州', '聊城', '滨州', '菏泽', 
-                 '广州', '韶关', '珠海', '汕头', '佛山', '江门', '湛江', '茂名', '肇庆', 
-                 '惠州', '梅州', '汕尾', '河源', '阳江', '清远', '东莞', '中山', '潮州', 
-                 '揭阳', '云浮', '南宁', '柳州', '桂林', '梧州', '北海', '防城港', '钦州', 
-                 '贵港', '玉林', '百色', '贺州', '河池', '来宾', '崇左', '成都', '绵阳', 
-                 '自贡', '攀枝花', '泸州', '德阳', '广元', '遂宁', '内江', '乐山', '南充', 
-                 '宜宾', '广安', '达州', '眉山', '雅安', '巴中', '资阳', '阿坝', '甘孜', '凉山'
-             ]
             is_local_gov_bond = '地方政府债' in bond_type or any(kw in symbol for kw in loc_keywords)
             
             if bond_type == '国债' or is_local_gov_bond:
@@ -390,6 +395,7 @@ def main():
             res_row['麦考利久期'] = None
             res_row['修正久期'] = None
             res_row['税后收益率'] = None
+            res_row['债券类型'] = None
             
         results.append(res_row)
 
@@ -399,6 +405,7 @@ def main():
     # 映射表头为中文
     header_mapping = {
          '债券简称': '债券简称',
+         '债券类型': '债券类型',
          '剩余天数': '剩余天数',
          '剩余期限_格式化': '剩余期限',
          '修正久期': '修正久期',
@@ -410,13 +417,13 @@ def main():
          '加权收益率': '加权收益率',
          '最新收益率': '最新收益率',
          '成交净价': '成交净价',
-         '交易量': '交易量',
+         '交易量': '成交量(万)',
          '成交时间': '成交时间'
      }
      
      # 调整列顺序并重命名
     cols_order = [
-         '债券简称', '剩余天数', '剩余期限_格式化', '税后收益率', '修正久期', '麦考利久期', 
+         '债券简称', '债券类型', '剩余天数', '剩余期限_格式化', '税后收益率', '修正久期', '麦考利久期', 
          '到期日', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
      ]
     
