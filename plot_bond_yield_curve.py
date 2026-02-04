@@ -14,6 +14,8 @@ CURVE_NAME = "中债国债收益率曲线"
 FETCH_STEP_DAYS = 300
 # 默认起始时间
 DEFAULT_START_DATE = "2001-01-01"
+# 默认截止时间（None 表示持续更新至今天）
+DEFAULT_END_DATE = None
 
 # 设置中文字体（Windows常用字体）
 plt.rcParams['font.sans-serif'] = ['SimHei']
