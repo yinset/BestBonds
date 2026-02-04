@@ -19,8 +19,8 @@ CONCURRENT_THREADS = 1
 SAVE_INTERVAL = 10
 RETRY_COUNT = 5
 DELAY_BETWEEN_REQUESTS = 5.0 
-SETTLEMENT_DATE = None  # (结算日)，例如 "2024-02-04"，若为 None 则使用当天数据
-FETCH_ALL_METADATA = True  # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
+SETTLEMENT_DATE = "2026-02-04"  # (结算日)，例如 "2024-02-04"，若为 None 则使用当天数据
+FETCH_ALL_METADATA = False   # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
 USER_AGENTS = [
     # Chrome on Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -224,60 +224,75 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
     计算债券久期、剩余期限（年）和剩余天数（优化版）
     """
     try:
-        # 1. 收益率合理性检查
-        if not isinstance(yield_val, (int, float, np.float64)):
-            return None, None, None, None
-            
-        if pd.isna(yield_val) or yield_val == 0:
-             # 如果收益率无效，仅返回剩余天数和粗略期限
-             if not maturity_date or maturity_date == '---':
-                 return None, None, None, None
-             settlement_dt = datetime.now() if settlement_date is None else datetime.strptime(settlement_date, '%Y-%m-%d')
-             maturity_dt = datetime.strptime(maturity_date, '%Y-%m-%d')
-             days = (maturity_dt - settlement_dt).days
-             return days / 365.25, None, None, max(0, days)
-
-        if yield_val < -10 or yield_val > 100:  # 收益率范围检查
-            warnings.warn(f"到期收益率 {yield_val}% 可能不合理")
-
-        # 2. 初始化日期
+        # 1. 初始化日期 (提取到最前面)
         if settlement_date is None:
-            settlement_date = datetime.now()
+            settlement_dt = datetime.now()
         elif isinstance(settlement_date, str):
-            settlement_date = datetime.strptime(settlement_date, '%Y-%m-%d')
+            settlement_dt = datetime.strptime(settlement_date, '%Y-%m-%d')
+        else:
+            settlement_dt = settlement_date
             
         # 统一处理为日期，避免时间差导致的计算偏差
-        if hasattr(settlement_date, 'replace'):
-            settlement_date = settlement_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        if hasattr(settlement_dt, 'replace'):
+            settlement_dt = settlement_dt.replace(hour=0, minute=0, second=0, microsecond=0)
             
         if not maturity_date or maturity_date == '---':
             return None, None, None, None
             
-        maturity_date_dt = datetime.strptime(maturity_date, '%Y-%m-%d')
+        if isinstance(maturity_date, str):
+            maturity_dt = datetime.strptime(maturity_date, '%Y-%m-%d')
+        else:
+            maturity_dt = maturity_date
+            
+        # 统一去除时间部分
+        if hasattr(maturity_dt, 'replace'):
+            maturity_dt = maturity_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # 2. 收益率合理性检查
+        if not isinstance(yield_val, (int, float, np.float64)):
+            # 如果没有收益率，仍然返回天数
+            delta = maturity_dt - settlement_dt
+            days = delta.days
+            return days / 365.25, None, None, days
+            
+        if pd.isna(yield_val) or yield_val == 0:
+             # 如果收益率无效，仅返回剩余天数和粗略期限
+             delta = maturity_dt - settlement_dt
+             days = delta.days
+             return days / 365.25, None, None, days
+
+        if yield_val < -10 or yield_val > 100:  # 收益率范围检查
+            warnings.warn(f"到期收益率 {yield_val}% 可能不合理")
+
+        # 3. 剩余天数 (到期日 - 结算日)
+        delta = maturity_dt - settlement_dt
+        days_to_maturity = delta.days
         
-        # 剩余天数
-        days_to_maturity = (maturity_date_dt - settlement_date_dt).days
-        if days_to_maturity <= 0:
-            return 0, 0, 0, 0
+        # 剩余年限
+        years_to_maturity = days_to_maturity / 365.25
+        
+        if days_to_maturity < 0:
+            return years_to_maturity, 0, 0, days_to_maturity
+
 
         # 3. 确定计算惯例
         convention = 'Act/Act' if any(bt in bond_type for bt in ['国债', '地方政府债']) else 'Act/365'
         
         # 4. 生成现金流时间点
-        coupon_dates, last_coupon_date = get_coupon_dates(settlement_date_dt, maturity_date_dt, frequency_str)
+        coupon_dates, last_coupon_date = get_coupon_dates(settlement_dt, maturity_dt, frequency_str)
         
         if not coupon_dates: # 异常情况
             return days_to_maturity / 365, None, None, days_to_maturity
 
         # 5. 计算各现金流的时间份额 (years from settlement)
-        times = np.array([day_count_fraction(settlement_date_dt, d, convention) for d in coupon_dates])
+        times = np.array([day_count_fraction(settlement_dt, d, convention) for d in coupon_dates])
         
         # 6. 计算应计利息 (Accrued Interest)
         freq_map = {'年': 1, '半年': 2, '季': 4, '按年付息': 1, '半年付息': 2, '按季付息': 4}
         m = freq_map.get(frequency_str, 1)
         
         next_coupon_date = coupon_dates[0]
-        days_since_last = (settlement_date_dt - last_coupon_date).days
+        days_since_last = (settlement_dt - last_coupon_date).days
         days_in_period = (next_coupon_date - last_coupon_date).days
         
         # 每期利息
@@ -429,9 +444,31 @@ def main():
     print("4. 正在计算剩余期限及久期...")
     results = []
     
-    for _, row in deal_df.iterrows():
+    # 建立一个规范化名称的索引，提高查找效率
+    normalized_cache = {k.replace(" ", ""): v for k, v in cache.items()}
+    
+    session = requests.Session()
+    # 预访问首页
+    try:
+        session.get("https://www.chinamoney.com.cn/chinese/zqjc/", timeout=15)
+    except:
+        pass
+
+    for _, row in tqdm(deal_df.iterrows(), total=len(deal_df), desc="计算进度"):
         symbol = row['债券简称']
-        meta = cache.get(symbol)
+        search_key = symbol.replace(" ", "")
+        meta = normalized_cache.get(search_key)
+        
+        # 如果缓存没有，尝试实时抓取 (即使 FETCH_ALL_METADATA 为 False)
+        if not meta:
+            tqdm.write(f"缓存未命中: {symbol}，尝试实时抓取...")
+            meta = get_bond_metadata_raw(symbol, session=session)
+            if meta:
+                cache[symbol] = meta
+                normalized_cache[search_key] = meta
+                # 抓取成功后顺便存一下文件，防止中途退出
+                if len(cache) % SAVE_INTERVAL == 0:
+                    save_cache_to_file(cache)
         
         res_row = row.to_dict()
         
@@ -497,6 +534,9 @@ def main():
             res_row['债券类型'] = None
             
         results.append(res_row)
+
+    # 最终保存一次缓存
+    save_cache_to_file(cache)
 
     # 5. 分类并导出
     print("5. 正在对债券进行分类并排序...")
