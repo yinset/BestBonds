@@ -14,12 +14,12 @@ import random
 
 # 配置
 CACHE_FILE = "bond_metadata_cache.csv"
-OUTPUT_FILE = "bond_analysis_results.xlsx"
+OUTPUT_FILE_BASE = "bond_analysis_results"  # 基础文件名，会自动加上日期
 CONCURRENT_THREADS = 1
 SAVE_INTERVAL = 10
 RETRY_COUNT = 5
 DELAY_BETWEEN_REQUESTS = 5.0 
-SETTLEMENT_DATE = "2026-02-02"  # 截止日期 (结算日)，例如 "2024-02-04"，若为 None 则使用当天
+SETTLEMENT_DATE = "2026-02-02"  # (结算日)，例如 "2024-02-04"，若为 None 则使用当天数据
 FETCH_ALL_METADATA = False  # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
 USER_AGENTS = [
     # Chrome on Windows
@@ -324,18 +324,40 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
 
 
 def main():
-    print("1. 正在获取最新成交行情数据...")
-    try:
-        deal_df = ak.bond_spot_deal()
-        print(f"成功获取 {len(deal_df)} 条成交记录。")
-        
-        # 过滤成交量：仅保留成交量大于等于 10 亿元的债券
-        if '交易量' in deal_df.columns:
-            deal_df = deal_df[deal_df['交易量'] >= 10]
-            print(f"经过成交量筛选（>= 10亿元），剩余 {len(deal_df)} 条记录。")
-    except Exception as e:
-        print(f"获取行情失败: {e}")
-        return
+    # 1. 获取成交行情数据
+    # 根据 SETTLEMENT_DATE 决定缓存文件名
+    settlement_dt_str = SETTLEMENT_DATE if SETTLEMENT_DATE else datetime.now().strftime('%Y-%m-%d')
+    deal_cache_file = f"bond_deal_cache_{settlement_dt_str}.csv"
+    output_file = f"{OUTPUT_FILE_BASE}_{settlement_dt_str}.xlsx"
+    
+    if os.path.exists(deal_cache_file):
+        print(f"1. 正在从本地缓存 {deal_cache_file} 加载成交行情数据...")
+        try:
+            deal_df = pd.read_csv(deal_cache_file, encoding='utf-8-sig')
+            print(f"成功从缓存加载 {len(deal_df)} 条成交记录。")
+        except Exception as e:
+            print(f"加载成交行情缓存失败: {e}，将重新抓取...")
+            deal_df = None
+    else:
+        deal_df = None
+
+    if deal_df is None:
+        print("1. 正在获取最新成交行情数据...")
+        try:
+            deal_df = ak.bond_spot_deal()
+            print(f"成功获取 {len(deal_df)} 条成交记录。")
+            
+            # 过滤成交量：仅保留成交量大于等于 10 亿元的债券
+            if '交易量' in deal_df.columns:
+                deal_df = deal_df[deal_df['交易量'] >= 10]
+                print(f"经过成交量筛选（>= 10亿元），剩余 {len(deal_df)} 条记录。")
+            
+            # 保存到缓存
+            deal_df.to_csv(deal_cache_file, index=False, encoding='utf-8-sig')
+            print(f"已保存成交行情到缓存: {deal_cache_file}")
+        except Exception as e:
+            print(f"获取行情失败: {e}")
+            return
 
     # 2. 加载缓存
     cache = {}
@@ -546,7 +568,7 @@ def main():
     mid_other = other_df[(other_df['修正久期'] > 0.5) & (other_df['修正久期'] < 5)]
     long_other = other_df[other_df['修正久期'] >= 5]
 
-    with pd.ExcelWriter(OUTPUT_FILE, engine='openpyxl') as writer:
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         # 按照用户最新要求，短期、中期、长期完全分开分 Sheet
         # 1. 免税债系列
         process_sheet_df(short_tax_free).to_excel(writer, sheet_name='短免税债', index=False)
@@ -561,7 +583,7 @@ def main():
         # 3. 全部汇总
         process_sheet_df(final_df).to_excel(writer, sheet_name='全部债券', index=False)
 
-    print(f"5. 分析完成！结果已保存至: {OUTPUT_FILE} (共 7 个 Sheet)")
+    print(f"5. 分析完成！结果已保存至: {output_file} (共 7 个 Sheet)")
 
 if __name__ == "__main__":
     main()
