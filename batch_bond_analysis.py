@@ -19,8 +19,8 @@ CONCURRENT_THREADS = 1
 SAVE_INTERVAL = 10
 RETRY_COUNT = 5
 DELAY_BETWEEN_REQUESTS = 5.0 
-SETTLEMENT_DATE = "2026-02-02"  # (结算日)，例如 "2024-02-04"，若为 None 则使用当天数据
-FETCH_ALL_METADATA = False  # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
+SETTLEMENT_DATE = None  # (结算日)，例如 "2024-02-04"，若为 None 则使用当天数据
+FETCH_ALL_METADATA = True  # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
 USER_AGENTS = [
     # Chrome on Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
