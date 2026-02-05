@@ -225,33 +225,17 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
     计算债券久期、剩余期限（年）和剩余天数（优化版）
     """
     try:
-        # 1. 收益率合理性检查
-        if not isinstance(yield_val, (int, float, np.float64)):
-            return None, None, None, None
-            
-        if pd.isna(yield_val) or yield_val == 0:
-             # 如果收益率无效，仅返回剩余天数和粗略期限
-             if not maturity_date or maturity_date == '---':
-                 return None, None, None, None
-             settlement_dt = datetime.now() if settlement_date is None else (datetime.strptime(settlement_date, '%Y-%m-%d') if isinstance(settlement_date, str) else settlement_date)
-             maturity_dt = datetime.strptime(maturity_date, '%Y-%m-%d')
-             days = (maturity_dt - settlement_dt).days
-             return days / 365.25, None, None, max(0, days)
-
-        if yield_val < -10 or yield_val > 100:  # 收益率范围检查
-            warnings.warn(f"到期收益率 {yield_val}% 可能不合理")
-
-        # 2. 初始化日期
+        # 1. 初始化日期
         if settlement_date is None:
-            settlement_date_dt = datetime.now()
+            settlement_dt = datetime.now()
         elif isinstance(settlement_date, str):
-            settlement_date_dt = datetime.strptime(settlement_date, '%Y-%m-%d')
+            settlement_dt = datetime.strptime(settlement_date, '%Y-%m-%d')
         else:
-            settlement_date_dt = settlement_date
+            settlement_dt = settlement_date
             
         # 统一处理为日期，避免时间差导致的计算偏差
-        if hasattr(settlement_date_dt, 'replace'):
-            settlement_date_dt = settlement_date_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        if hasattr(settlement_dt, 'replace'):
+            settlement_dt = settlement_dt.replace(hour=0, minute=0, second=0, microsecond=0)
             
         if not maturity_date or maturity_date == '---':
             return None, None, None, None
@@ -265,38 +249,29 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
         if hasattr(maturity_dt, 'replace'):
             maturity_dt = maturity_dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        # 2. 收益率合理性检查
-        if not isinstance(yield_val, (int, float, np.float64)):
-            # 如果没有收益率，仍然返回天数
-            delta = maturity_dt - settlement_dt
-            days = delta.days
-            return days / 365.25, None, None, days
-            
-        if pd.isna(yield_val) or yield_val == 0:
+        # 2. 剩余天数 (到期日 - 结算日)
+        delta = maturity_dt - settlement_dt
+        days_to_maturity = delta.days
+        
+        # 剩余年限 (用于久期计算中的时间份额)
+        years_to_maturity = days_to_maturity / 365.25
+        
+        if days_to_maturity <= 0:
+            return 0, 0, 0, 0
+
+        # 3. 收益率合理性检查
+        if not isinstance(yield_val, (int, float, np.float64)) or pd.isna(yield_val) or yield_val == 0:
              # 如果收益率无效，仅返回剩余天数和粗略期限
-             delta = maturity_dt - settlement_dt
-             days = delta.days
-             return days / 365.25, None, None, days
+             return years_to_maturity, None, None, days_to_maturity
 
         if yield_val < -10 or yield_val > 100:  # 收益率范围检查
             warnings.warn(f"到期收益率 {yield_val}% 可能不合理")
 
-        # 3. 剩余天数 (到期日 - 结算日)
-        delta = maturity_dt - settlement_dt
-        days_to_maturity = delta.days
-        
-        # 剩余年限
-        years_to_maturity = days_to_maturity / 365.25
-        
-        if days_to_maturity < 0:
-            return years_to_maturity, 0, 0, days_to_maturity
-
-
-        # 3. 确定计算惯例
+        # 4. 确定计算惯例
         convention = 'Act/Act' if any(bt in bond_type for bt in ['国债', '地方政府债']) else 'Act/365'
         
-        # 4. 生成现金流时间点
-        # 新增：判断是否为贴现或零息债券
+        # 5. 生成现金流时间点
+        # 判断是否为贴现或零息债券
         is_discount_or_zero = False
         if coupon_type and any(kw in coupon_type for kw in ['贴现', '零息']):
             is_discount_or_zero = True
@@ -305,24 +280,24 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
         m = freq_map.get(frequency_str, 1)
 
         if is_discount_or_zero:
-            coupon_dates = [maturity_date_dt]
-            last_coupon_date = settlement_date_dt # 简化处理，应计利息为0
+            coupon_dates = [maturity_dt]
+            last_coupon_date = settlement_dt # 简化处理，应计利息为0
             coupon_per_period = 0
             cash_flows = np.array([100.0])
         else:
-            coupon_dates, last_coupon_date = get_coupon_dates(settlement_date_dt, maturity_date_dt, frequency_str)
+            coupon_dates, last_coupon_date = get_coupon_dates(settlement_dt, maturity_dt, frequency_str)
             if not coupon_dates: # 异常情况
-                return days_to_maturity / 365, None, None, days_to_maturity
+                return years_to_maturity, None, None, days_to_maturity
             
             # 每期利息
             coupon_per_period = (coupon_rate * 100) / m
             cash_flows = np.array([coupon_per_period] * len(coupon_dates))
             cash_flows[-1] += 100 # 加上本金
 
-        # 5. 计算各现金流的时间份额 (years from settlement)
+        # 6. 计算各现金流的时间份额 (years from settlement)
         times = np.array([day_count_fraction(settlement_dt, d, convention) for d in coupon_dates])
         
-        # 6. 计算应计利息 (Accrued Interest)
+        # 7. 计算应计利息 (Accrued Interest)
         next_coupon_date = coupon_dates[0]
         days_since_last = (settlement_dt - last_coupon_date).days
         days_in_period = (next_coupon_date - last_coupon_date).days
@@ -341,7 +316,6 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
             discount_factors = 1 / (1 + y / m) ** (times * m)
         else:
             # 单利折现 (针对最后一次现金流)
-            # 简化处理：对于短期债，通常只有一次现金流
             discount_factors = 1 / (1 + y * times)
             
         pv_cfs = cash_flows * discount_factors
