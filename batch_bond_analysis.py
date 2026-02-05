@@ -171,6 +171,9 @@ def get_bond_metadata_raw(symbol, session=None):
 
 import warnings
 import traceback
+from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 def day_count_fraction(date1, date2, convention='Act/365'):
     """
@@ -336,6 +339,244 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
     except Exception as e:
         # traceback.print_exc() # 调试用
         return None, None, None, None
+
+def create_homepage_sheet(writer, short_bonds_raw, mid_bonds_raw, long_bonds_raw, header_mapping, cols_order):
+    """
+    创建主页sheet，展示推荐购买的债券
+    分为四个区域：
+    - 左上角：无风险短期债券选择
+    - 右上角：中风险中期债券选择
+    - 左下角：高风险长期债券选择
+    - 右下角：备注区
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    
+    # 创建工作表
+    ws = writer.book.create_sheet("主页", 0)  # 插入到第一个位置
+    
+    # 处理DataFrame，应用与process_sheet_df相同的逻辑
+    def prepare_df(df):
+        if df.empty:
+            return df
+        existing_cols = [c for c in cols_order if c in df.columns]
+        df_prepared = df[existing_cols].copy()
+        df_prepared.sort_values('税后年收益率', ascending=False, inplace=True)
+        df_prepared.rename(columns=header_mapping, inplace=True)
+        return df_prepared
+    
+    short_bonds = prepare_df(short_bonds_raw)
+    mid_bonds = prepare_df(mid_bonds_raw)
+    long_bonds = prepare_df(long_bonds_raw)
+    
+    # 定义样式
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    title_font = Font(bold=True, size=12)
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    center_alignment = Alignment(horizontal='center', vertical='center')
+    left_alignment = Alignment(horizontal='left', vertical='center')
+    
+    # 收益率和久期的颜色填充
+    yield_fill = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid")  # 浅黄色
+    duration_fill = PatternFill(start_color="C5E0B4", end_color="C5E0B4", fill_type="solid")  # 浅绿色
+    
+    def filter_top_yield_bonds(df, col_name='税后年收益率'):
+        """筛选税后年收益率从最高到最高*0.9的债券"""
+        if df.empty:
+            return pd.DataFrame()
+        
+        # 检查列名是否存在（可能是原始列名或重命名后的列名）
+        actual_col = None
+        if col_name in df.columns:
+            actual_col = col_name
+        elif '税后年收益率' in df.columns:
+            actual_col = '税后年收益率'
+        else:
+            return pd.DataFrame()
+        
+        # 过滤掉税后年收益率为空或无效的数据
+        df_filtered = df[df[actual_col].notna() & (df[actual_col] > 0)].copy()
+        if df_filtered.empty:
+            return pd.DataFrame()
+        
+        # 按税后年收益率降序排序
+        df_sorted = df_filtered.sort_values(actual_col, ascending=False)
+        
+        # 获取最高收益率
+        max_yield = df_sorted[actual_col].iloc[0]
+        min_yield = max_yield * 0.9
+        
+        # 筛选范围
+        result = df_sorted[df_sorted[actual_col] >= min_yield].copy()
+        return result
+    
+    def write_bond_table(ws, start_row, start_col, title, bonds_df, max_rows=15):
+        """在指定位置写入债券表格"""
+        if bonds_df.empty:
+            # 写入标题和空提示
+            ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=start_col+6)
+            cell = ws.cell(row=start_row, column=start_col)
+            cell.value = title
+            cell.font = title_font
+            cell.alignment = center_alignment
+            cell.fill = header_fill
+            cell.font = header_font
+            
+            ws.merge_cells(start_row=start_row+1, start_column=start_col, end_row=start_row+1, end_column=start_col+6)
+            cell = ws.cell(row=start_row+1, column=start_col)
+            cell.value = "暂无符合条件的债券"
+            cell.alignment = center_alignment
+            return start_row + 2
+        
+        # 准备显示的列（使用重命名后的列名，因为DataFrame已经通过prepare_df重命名过）
+        display_cols = ['债券简称', '税后年收益率', '麦考利久期', '剩余期限', '到期日', '票面利率', '成交额(亿元)']
+        
+        # 写入标题
+        ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=start_col+len(display_cols)-1)
+        cell = ws.cell(row=start_row, column=start_col)
+        cell.value = title
+        cell.font = title_font
+        cell.alignment = center_alignment
+        cell.fill = header_fill
+        cell.font = header_font
+        
+        # 写入表头
+        header_row = start_row + 1
+        for idx, col_name in enumerate(display_cols):
+            cell = ws.cell(row=header_row, column=start_col+idx)
+            cell.value = col_name
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_alignment
+            cell.border = border
+        
+        # 写入数据（限制最大行数）
+        data_rows = min(len(bonds_df), max_rows)
+        for row_idx in range(data_rows):
+            excel_row = header_row + 1 + row_idx
+            for col_idx, col_name in enumerate(display_cols):
+                cell = ws.cell(row=excel_row, column=start_col+col_idx)
+                # DataFrame已经重命名过，直接使用display_cols中的列名
+                df_col = col_name
+                
+                if df_col in bonds_df.columns:
+                    value = bonds_df.iloc[row_idx][df_col]
+                    # 处理NaN值
+                    if pd.isna(value):
+                        cell.value = '---'
+                    elif isinstance(value, (int, float)):
+                        if col_name == '税后年收益率':
+                            cell.value = round(value, 4)
+                        elif col_name == '麦考利久期':
+                            cell.value = round(value, 4)
+                        elif col_name == '票面利率':
+                            cell.value = round(value, 4)
+                        elif col_name == '成交额(亿元)':
+                            cell.value = int(value) if isinstance(value, float) and value.is_integer() else value
+                        else:
+                            cell.value = value
+                    else:
+                        cell.value = str(value)
+                else:
+                    cell.value = '---'
+                
+                # 设置样式
+                cell.border = border
+                cell.alignment = center_alignment if col_idx < 2 else left_alignment
+                
+                # 给税后年收益率和麦考利久期加颜色
+                if col_name == '税后年收益率':
+                    cell.fill = yield_fill
+                elif col_name == '麦考利久期':
+                    cell.fill = duration_fill
+        
+        # 设置列宽
+        col_widths = [20, 12, 12, 15, 12, 10, 12]
+        for idx, width in enumerate(col_widths):
+            ws.column_dimensions[get_column_letter(start_col+idx)].width = width
+        
+        return excel_row + 2
+    
+    # 筛选各类型债券
+    top_short = filter_top_yield_bonds(short_bonds)
+    top_mid = filter_top_yield_bonds(mid_bonds)
+    top_long = filter_top_yield_bonds(long_bonds)
+    
+    # 左侧：三个债券表格垂直排列 (从A1开始)
+    # 限制每个风险组最多显示10个债券
+    end_row_1 = write_bond_table(ws, 1, 1, "无风险短期债券选择", top_short, max_rows=10)
+    end_row_2 = write_bond_table(ws, end_row_1, 1, "中风险中期债券选择", top_mid, max_rows=10)
+    end_row_3 = write_bond_table(ws, end_row_2, 1, "高风险长期债券选择", top_long, max_rows=10)
+    
+    # 右侧：备注区 (从H1开始，即第8列)
+    notes_start_row = 1
+    # 备注区标题
+    ws.merge_cells(start_row=notes_start_row, start_column=8, end_row=notes_start_row, end_column=14)
+    cell = ws.cell(row=notes_start_row, column=8)
+    cell.value = "备注区"
+    cell.font = title_font
+    cell.alignment = center_alignment
+    cell.fill = header_fill
+    cell.font = header_font
+    cell.border = border
+    
+    # 备注内容区域
+    # 内容区单元格合并大小为24行
+    notes_content_rows = 24 
+    # 先合并内容区域
+    ws.merge_cells(start_row=notes_start_row+1, start_column=8, end_row=notes_start_row+notes_content_rows, end_column=14)
+    # 然后设置合并单元格的样式
+    cell = ws.cell(row=notes_start_row+1, column=8)
+    
+    remarks_text = """***************************如果不清楚存款利率变化会给债券带来怎样的风险，请直接选择无风险短期债券区***************************
+
+1.推荐在四大行和招商银行购买。更推荐在招商银行购买，菜单更人性化。
+2.目前接口只能抓取到机构间的数据和收益率，实际利率会有一点降低，银行柜台债小概率会搜不到某个国债（未面向个人投资者），详情见银行。
+3.如何度量债券风险：一笔钱距离你越久远，利率变化对你即将获得的所有钱产生的蝴蝶效应越大。时间是决定债券波动率的决定因素。
+4.久期是什么？为什么久期能够估算利率的杠杆率？
+假设你购买了30年期限的，持有到期的年收益率为2%的国债，购买额度100万。每一年会给2万元利息，最后一年连本带息付102万。
+
+让我们想象一块无重力木板，将一整条木板等分成30份相同长度后划分刻度，第0年不付息，0这个刻度不放钱，1-29年在每一个刻度上放n年后的2万元，最后一个刻度上放30年后的102万
+然后，找到木板两边平衡的支点（重心），重心所在的刻度就是这段现金流的久期（久期单位为年）。这就是麦考利久期的物理意义——现金流时间的加权平均（权重是现金流的现值）。
+证明这段钱（受到利率的影响程度）等效于一个剩余期限为久期年的一笔钱。
+
+在本例中，想要获得久期，我们首先把未来的钱计算成现值。
+n年后的2万现值为20000/(1+0.02)^n
+第 1 年：≈ 1.9608 万元
+第 2 年：≈ 1.9223 万元
+…
+第 29 年：≈ 1.1395 万元
+第 30 年：102 万的现值 ≈ 56.3085 万元
+
+计算重心：
+分子 = (Σ(29,n=1) n * n年后现金流现值) + 30 * 56.3085 万元= 2285.348
+分母：所有现值重量的总和 = 债券价格 = 100 万元（总现值）
+
+（重心）久期 = 分子/分母 = 22.85年
+利率上升 1%，债券价值变化大约 -22.85%，实际计算为-19.99672%,误差符合预计。即由100万变为80万。
+利率下降 0.5%，债券价值变化大约 +11.43%，实际计算为+12.001026%,误差符合预计。即由100万变为112万。
+
+故久期基本上可以度量债券因未来利率变化的粗略波动幅度，即债券的风险度。
+参照自己的波动需求选择！"""
+
+    cell.value = remarks_text
+    cell.border = border
+    cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    # 设置列宽
+    ws.column_dimensions[get_column_letter(8)].width = 50
+    ws.column_dimensions['N'].width = 28
+    
+    # 设置行高
+    ws.row_dimensions[1].height = 25
+    for row in range(2, ws.max_row + 1):
+        ws.row_dimensions[row].height = 20
 
 
 def main():
@@ -523,7 +764,7 @@ def main():
             res_row['修正久期'] = mod_dur
             res_row['债券类型'] = meta.get('bond_type', '未知')
 
-            # 计算税后收益率
+            # 计算税后年收益率
             # 国债和地方政府债免除20%的利息所得税。其他的债券需要上缴。
             # 地方债判断逻辑：bond_type包含"地方政府债"
             bond_type = meta.get('bond_type', '')
@@ -533,7 +774,7 @@ def main():
                 after_tax_yield = y_val
             else:
                 after_tax_yield = y_val * 0.8 if not pd.isna(y_val) else None
-            res_row['税后收益率'] = after_tax_yield
+            res_row['税后年收益率'] = after_tax_yield
         else:
             res_row['到期日'] = None
             res_row['票面利率'] = None
@@ -543,7 +784,7 @@ def main():
             res_row['剩余天数'] = None
             res_row['麦考利久期'] = None
             res_row['修正久期'] = None
-            res_row['税后收益率'] = None
+            res_row['税后年收益率'] = None
             res_row['债券类型'] = None
             
         results.append(res_row)
@@ -566,7 +807,7 @@ def main():
         '剩余期限_格式化': '剩余期限',
         '修正久期': '修正久期',
         '麦考利久期': '麦考利久期',
-        '税后收益率': '税后收益率',
+        '税后年收益率': '税后年收益率',
         '到期日': '到期日',
         '票面利率': '票面利率',
         '付息频率': '付息频率',
@@ -579,11 +820,11 @@ def main():
     }
     
     cols_order = [
-        '债券简称', '债券类型', '剩余天数', '剩余期限_格式化', '税后收益率', '修正久期', '麦考利久期', 
+        '债券简称', '债券类型', '剩余天数', '剩余期限_格式化', '税后年收益率', '修正久期', '麦考利久期', 
         '到期日', '票面利率', '付息频率', '付息方式', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
     ]
 
-    def process_sheet_df(df, sort_by='税后收益率'):
+    def process_sheet_df(df, sort_by='税后年收益率'):
         # 确保列存在并按序排列
         existing_cols = [c for c in cols_order if c in df.columns]
         df_sorted = df[existing_cols].copy()
@@ -601,6 +842,9 @@ def main():
     long_bonds = final_df[final_df['修正久期'] >= 5]
 
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        # 先创建主页sheet
+        create_homepage_sheet(writer, short_bonds, mid_bonds, long_bonds, header_mapping, cols_order)
+        
         # 按照最新要求，不再区分免税和其他，仅按期限分 Sheet
         process_sheet_df(short_bonds).to_excel(writer, sheet_name='短期债券', index=False)
         process_sheet_df(mid_bonds).to_excel(writer, sheet_name='中期债券', index=False)
@@ -609,7 +853,7 @@ def main():
         # 全部汇总：按交易量（成交额）降序排列
         process_sheet_df(final_df, sort_by='交易量').to_excel(writer, sheet_name='全部债券', index=False)
 
-    print(f"5. 分析完成！结果已保存至: {output_file} (共 4 个 Sheet)")
+    print(f"6. 分析完成！结果已保存至: {output_file}")
 
 if __name__ == "__main__":
     main()
