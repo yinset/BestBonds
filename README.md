@@ -5,7 +5,8 @@
 > **久期约等于债券受利率变化的杠杆倍数。**
 > 
 > **久期与时间、利率的关系参考** 作者：https://github.com/ClamJom
-<img width="915" height="772" alt="image" src="https://github.com/user-attachments/assets/b8ee4d1a-32d2-4f6f-8657-26e35136da64" />
+<img width="640" height="516" alt="duration_risk_heatmap" src="https://github.com/user-attachments/assets/f572a1a6-cc92-4059-a1fb-57fce6053965" />
+
 
 ---
 
