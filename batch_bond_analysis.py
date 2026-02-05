@@ -481,6 +481,11 @@ def main():
              res_row['交易量'] = vol
 
         if meta:
+            # 过滤掉同业存单，个人投资者无法购买
+            bond_type = meta.get('bond_type', '')
+            if '同业存单' in bond_type:
+                continue
+
             y_val = row['加权收益率'] if not pd.isna(row['加权收益率']) else row['最新收益率']
             
             years, mac_dur, mod_dur, days = calculate_duration(
