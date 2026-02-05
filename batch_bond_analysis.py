@@ -13,7 +13,8 @@ import threading
 import random
 
 # 配置
-CACHE_FILE = "bond_metadata_cache.csv"
+CACHE_DIR = "cache"
+CACHE_FILE = os.path.join(CACHE_DIR, "bond_metadata_cache.csv")
 OUTPUT_FILE_BASE = "bond_analysis_results"  # 基础文件名，会自动加上日期
 CONCURRENT_THREADS = 1
 SAVE_INTERVAL = 10
@@ -538,7 +539,7 @@ def create_homepage_sheet(writer, short_bonds_raw, mid_bonds_raw, long_bonds_raw
     remarks_text = """***************************如果不清楚存款利率变化会给债券带来怎样的风险，请直接选择无风险短期债券区***************************
 
 1.推荐在四大行和招商银行购买。更推荐在招商银行购买，菜单更人性化。
-2.目前接口只能抓取到机构间的数据和收益率，实际利率会有一点降低，银行柜台债小概率会搜不到某个国债（未面向个人投资者），详情见银行。
+2.目前接口只能抓取到机构间的数据和收益率，实际利率会有一点点点点降低，银行柜台债小概率会搜不到某个国债（未面向个人投资者），详情见银行。
 3.如何度量债券风险：一笔钱距离你越久远，利率变化对你即将获得的所有钱产生的蝴蝶效应越大。时间是决定债券波动率的决定因素。
 4.久期是什么？为什么久期能够估算利率的杠杆率？
 假设你购买了30年期限的，持有到期的年收益率为2%的国债，购买额度100万。每一年会给2万元利息，最后一年连本带息付102万。
@@ -580,10 +581,9 @@ n年后的2万现值为20000/(1+0.02)^n
 
 
 def main():
-    # 1. 获取成交行情数据
-    # 根据 SETTLEMENT_DATE 决定缓存文件名
-    settlement_dt_str = SETTLEMENT_DATE if SETTLEMENT_DATE else datetime.now().strftime('%Y-%m-%d')
-    deal_cache_file = f"bond_deal_cache_{settlement_dt_str}.csv"
+    # 1. 获取并清洗成交数据
+    settlement_dt_str = SETTLEMENT_DATE if SETTLEMENT_DATE else datetime.now().strftime("%Y-%m-%d")
+    deal_cache_file = os.path.join(CACHE_DIR, f"bond_deal_cache_{settlement_dt_str}.csv")
     output_file = f"{OUTPUT_FILE_BASE}_{settlement_dt_str}.xlsx"
     
     if os.path.exists(deal_cache_file):

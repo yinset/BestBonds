@@ -8,12 +8,13 @@ import random
 from datetime import datetime, timedelta
 
 # 配置
-CACHE_FILE = "china_bond_yield_cache.csv"
+CACHE_DIR = "cache"
+CACHE_FILE = os.path.join(CACHE_DIR, "china_bond_yield_cache.csv")
 CURVE_NAME = "中债国债收益率曲线"
 # 抓取的时间跨度限制（单次请求小于一年，建议300天）
 FETCH_STEP_DAYS = 300
 # 默认起始时间
-DEFAULT_START_DATE = "2001-01-01"
+DEFAULT_START_DATE = "2005-01-01"
 # 默认截止时间（None 表示持续更新至今天）
 DEFAULT_END_DATE = None
 
