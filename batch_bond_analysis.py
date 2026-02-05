@@ -217,6 +217,7 @@ import traceback
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.drawing.image import Image
 
 def day_count_fraction(date1, date2, convention='Act/365'):
     """
@@ -607,11 +608,27 @@ n年后的2万现值为20000/(1+0.02)^n
 如果利率下降 0.5%，债券价值变化大约 +11.43%，实际计算为+12.001026%,误差符合预计。即本例债券的现值会由原本的100万元变为大约112万元。
 
 故久期基本上可以度量债券因未来利率变化的粗略波动幅度，即债券的风险度。
-参照自己的波动需求选择！"""
+参照自己的波动需求选择！如下是到期时间N（年）为横坐标与债券票面利率为纵坐标的久期热力图："""
 
     cell.value = remarks_text
     cell.border = border
     cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+
+    # 插入图片 (如果存在)
+    img_path = "duration_risk_heatmap.png"
+    if os.path.exists(img_path):
+        try:
+            img = Image(img_path)
+            # 按照用户要求的 640 * 516 像素设置图片尺寸
+            img.width = 640
+            img.height = 516
+            # 将图片插入到备注内容区下方 (从第26行开始)
+            ws.add_image(img, 'H26')
+        except Exception as e:
+            print(f"插入图片失败: {e}")
+    else:
+        print(f"提示: 未发现图片 {img_path}，主页将不显示风险久期图。")
+
     # 设置列宽
     ws.column_dimensions[get_column_letter(8)].width = 50
     ws.column_dimensions['N'].width = 28
