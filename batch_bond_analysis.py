@@ -362,17 +362,26 @@ def main():
             deal_df = ak.bond_spot_deal()
             print(f"成功获取 {len(deal_df)} 条成交记录。")
             
-            # 过滤成交量：仅保留成交量大于等于 10 亿元的债券
-            if '交易量' in deal_df.columns:
-                deal_df = deal_df[deal_df['交易量'] >= 10]
-                print(f"经过成交量筛选（>= 10亿元），剩余 {len(deal_df)} 条记录。")
-            
             # 保存到缓存
             deal_df.to_csv(deal_cache_file, index=False, encoding='utf-8-sig')
             print(f"已保存成交行情到缓存: {deal_cache_file}")
         except Exception as e:
             print(f"获取行情失败: {e}")
             return
+
+    if deal_df is not None:
+        # 统一筛选逻辑：在加载完成后立即执行所有过滤
+        initial_count = len(deal_df)
+        
+        # 1. 筛选国债且非贴现
+        mask = deal_df['债券简称'].str.contains('国债') & ~deal_df['债券简称'].str.contains('贴现')
+        
+        # 2. 筛选成交量（>= 10亿元）
+        if '交易量' in deal_df.columns:
+            mask = mask & (deal_df['交易量'] >= 10)
+            
+        deal_df = deal_df[mask].copy()
+        print(f"1. 统一筛选完成：从 {initial_count} 条过滤至 {len(deal_df)} 条（条件：国债、非贴现、成交量>=10亿）。")
 
     # 2. 加载缓存
     cache = {}
@@ -456,10 +465,6 @@ def main():
 
     for _, row in tqdm(deal_df.iterrows(), total=len(deal_df), desc="计算进度"):
         symbol = row['债券简称']
-        # 过滤掉债券简称中含有“贴现”两个字的债券
-        if '贴现' in symbol:
-            continue
-            
         search_key = symbol.replace(" ", "")
         meta = normalized_cache.get(search_key)
         
@@ -485,13 +490,6 @@ def main():
              res_row['交易量'] = vol
 
         if meta:
-            # 过滤掉同业存单和中期票据，个人投资者难以直接购买
-            bond_type = meta.get('bond_type', '')
-            if any(kw in bond_type for kw in ['同业存单', '中期票据','无固定期限资本债券','二级资本工具']):
-                continue
-            
-            
-
             y_val = row['加权收益率'] if not pd.isna(row['加权收益率']) else row['最新收益率']
             
             years, mac_dur, mod_dur, days = calculate_duration(
