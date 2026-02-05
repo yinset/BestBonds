@@ -5,6 +5,12 @@
 
 ---
 
+## **结果示例** 
+2026-02-04的运行结果
+<img width="1875" height="872" alt="image" src="https://github.com/user-attachments/assets/941ae4d1-f057-4869-8585-e5bdb0d572bf" />
+
+---
+
 ## **项目核心功能** 🚀
 
 1.  **自动化行情抓取**：利用 `akshare` 获取最新的债券成交行情，实时掌握市场脉搏。
