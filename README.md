@@ -1,13 +1,18 @@
 # 存款去哪儿？ 🏦💰
 本项目致力于解决银行存款不知道放哪的问题。通过直接参与债券市场，您可以跳过银行定期存款这个不灵活、提前支取就无效且单利利息的收费中介，拥抱复利、提前支取按天计息的世界，参照自己的需求获取更高收益！
-> **PS：久期约等于无风险利率的杠杆率。久期长的债券投资有风险，仓位设置需谨慎。在抓取分析前查询https://www.chinamoney.com.cn/chinese/mkdatabond
-> 看是否已经刷新交易量数据（一般在晚上八点左右刷新），不然会自动调用历史最近交易日数据。**
+> **PS：在抓取分析前查询 https://www.chinamoney.com.cn/chinese/mkdatabond 看是否已经刷新交易量数据（一般在晚上八点左右刷新），不然会自动调用历史最近交易日数据。**
+>
+> **久期约等于债券受利率变化的杠杆倍数。**
+> 
+> **久期与时间、利率的关系参考** 作者：https://github.com/ClamJom
+<img width="915" height="772" alt="image" src="https://github.com/user-attachments/assets/b8ee4d1a-32d2-4f6f-8657-26e35136da64" />
 
 ---
 
 ## **结果示例** 
 2026-02-04的运行结果
-<img width="1875" height="872" alt="image" src="https://github.com/user-attachments/assets/941ae4d1-f057-4869-8585-e5bdb0d572bf" />
+<img width="1812" height="824" alt="image" src="https://github.com/user-attachments/assets/a97e8d30-e35b-44ce-b514-eab8c8dda780" />
+
 
 ---
 
