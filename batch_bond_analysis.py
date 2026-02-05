@@ -19,8 +19,8 @@ CONCURRENT_THREADS = 1
 SAVE_INTERVAL = 10
 RETRY_COUNT = 5
 DELAY_BETWEEN_REQUESTS = 5.0 
-SETTLEMENT_DATE = None  # (结算日)，例如 "2024-02-04"，若为 None 则使用当天数据
-FETCH_ALL_METADATA = True  # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
+SETTLEMENT_DATE = "2026-02-04"  # (结算日)，例如 "2026-02-04"，若为 None 则使用当天数据
+FETCH_ALL_METADATA = False  # True表示在分析前拉取所有新债券数据，False表示直接用本地缓存分析
 USER_AGENTS = [
     # Chrome on Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -159,7 +159,8 @@ def get_bond_metadata_raw(symbol, session=None):
                 'maturity_date': data.get('mrtyDate'),
                 'coupon_rate': float(data.get('parCouponRate', 0)) / 100 if data.get('parCouponRate') and data.get('parCouponRate') != '---' else 0,
                 'frequency': data.get('couponFrqncy', '年'),
-                'bond_type': data.get('bondType')
+                'bond_type': data.get('bondType'),
+                'coupon_type': data.get('intrstPayMeth')
             }
             return metadata
         except Exception as e:
@@ -219,7 +220,7 @@ def get_coupon_dates(settlement_date, maturity_date, frequency_str):
     coupon_dates.sort()
     return coupon_dates, last_coupon_date
 
-def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年', settlement_date=None, bond_type=''):
+def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年', settlement_date=None, bond_type='', coupon_type=''):
     """
     计算债券久期、剩余期限（年）和剩余天数（优化版）
     """
@@ -232,7 +233,7 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
              # 如果收益率无效，仅返回剩余天数和粗略期限
              if not maturity_date or maturity_date == '---':
                  return None, None, None, None
-             settlement_dt = datetime.now() if settlement_date is None else datetime.strptime(settlement_date, '%Y-%m-%d')
+             settlement_dt = datetime.now() if settlement_date is None else (datetime.strptime(settlement_date, '%Y-%m-%d') if isinstance(settlement_date, str) else settlement_date)
              maturity_dt = datetime.strptime(maturity_date, '%Y-%m-%d')
              days = (maturity_dt - settlement_dt).days
              return days / 365.25, None, None, max(0, days)
@@ -242,13 +243,15 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
 
         # 2. 初始化日期
         if settlement_date is None:
-            settlement_date = datetime.now()
+            settlement_date_dt = datetime.now()
         elif isinstance(settlement_date, str):
-            settlement_date = datetime.strptime(settlement_date, '%Y-%m-%d')
+            settlement_date_dt = datetime.strptime(settlement_date, '%Y-%m-%d')
+        else:
+            settlement_date_dt = settlement_date
             
         # 统一处理为日期，避免时间差导致的计算偏差
-        if hasattr(settlement_date, 'replace'):
-            settlement_date = settlement_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        if hasattr(settlement_date_dt, 'replace'):
+            settlement_date_dt = settlement_date_dt.replace(hour=0, minute=0, second=0, microsecond=0)
             
         if not maturity_date or maturity_date == '---':
             return None, None, None, None
@@ -264,29 +267,38 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
         convention = 'Act/Act' if any(bt in bond_type for bt in ['国债', '地方政府债']) else 'Act/365'
         
         # 4. 生成现金流时间点
-        coupon_dates, last_coupon_date = get_coupon_dates(settlement_date_dt, maturity_date_dt, frequency_str)
-        
-        if not coupon_dates: # 异常情况
-            return days_to_maturity / 365, None, None, days_to_maturity
+        # 新增：判断是否为贴现或零息债券
+        is_discount_or_zero = False
+        if coupon_type and any(kw in coupon_type for kw in ['贴现', '零息']):
+            is_discount_or_zero = True
+
+        freq_map = {'年': 1, '半年': 2, '季': 4, '按年付息': 1, '半年付息': 2, '按季付息': 4}
+        m = freq_map.get(frequency_str, 1)
+
+        if is_discount_or_zero:
+            coupon_dates = [maturity_date_dt]
+            last_coupon_date = settlement_date_dt # 简化处理，应计利息为0
+            coupon_per_period = 0
+            cash_flows = np.array([100.0])
+        else:
+            coupon_dates, last_coupon_date = get_coupon_dates(settlement_date_dt, maturity_date_dt, frequency_str)
+            if not coupon_dates: # 异常情况
+                return days_to_maturity / 365, None, None, days_to_maturity
+            
+            # 每期利息
+            coupon_per_period = (coupon_rate * 100) / m
+            cash_flows = np.array([coupon_per_period] * len(coupon_dates))
+            cash_flows[-1] += 100 # 加上本金
 
         # 5. 计算各现金流的时间份额 (years from settlement)
         times = np.array([day_count_fraction(settlement_date_dt, d, convention) for d in coupon_dates])
         
         # 6. 计算应计利息 (Accrued Interest)
-        freq_map = {'年': 1, '半年': 2, '季': 4, '按年付息': 1, '半年付息': 2, '按季付息': 4}
-        m = freq_map.get(frequency_str, 1)
-        
         next_coupon_date = coupon_dates[0]
         days_since_last = (settlement_date_dt - last_coupon_date).days
         days_in_period = (next_coupon_date - last_coupon_date).days
         
-        # 每期利息
-        coupon_per_period = (coupon_rate * 100) / m
         accrued_interest = coupon_per_period * (days_since_last / days_in_period) if days_in_period > 0 else 0
-        
-        # 7. 生成现金流序列
-        cash_flows = np.array([coupon_per_period] * len(coupon_dates))
-        cash_flows[-1] += 100 # 加上本金
         
         # 8. 计算价格和久期
         y = yield_val / 100 
@@ -451,7 +463,9 @@ def main():
                 coupon_rate=meta['coupon_rate'],
                 maturity_date=meta['maturity_date'],
                 frequency_str=meta['frequency'],
-                settlement_date=SETTLEMENT_DATE
+                settlement_date=SETTLEMENT_DATE,
+                bond_type=meta.get('bond_type', ''),
+                coupon_type=meta.get('coupon_type', '')
             )
             
             # 处理 "够一年则进位一年" 的逻辑：366天 -> 1年1天
@@ -468,6 +482,7 @@ def main():
             res_row['到期日'] = meta['maturity_date']
             res_row['票面利率'] = meta['coupon_rate']
             res_row['付息频率'] = meta['frequency']
+            res_row['付息方式'] = meta.get('coupon_type', '---')
             res_row['剩余期限_格式化'] = tenor_display
             res_row['剩余天数'] = days
             res_row['麦考利久期'] = mac_dur
@@ -489,6 +504,7 @@ def main():
             res_row['到期日'] = None
             res_row['票面利率'] = None
             res_row['付息频率'] = None
+            res_row['付息方式'] = None
             res_row['剩余期限_格式化'] = None
             res_row['剩余天数'] = None
             res_row['麦考利久期'] = None
@@ -517,6 +533,7 @@ def main():
         '到期日': '到期日',
         '票面利率': '票面利率',
         '付息频率': '付息频率',
+        '付息方式': '付息方式',
         '加权收益率': '加权收益率',
         '最新收益率': '最新收益率',
         '成交净价': '成交净价',
@@ -526,7 +543,7 @@ def main():
     
     cols_order = [
         '债券简称', '债券类型', '剩余天数', '剩余期限_格式化', '税后收益率', '修正久期', '麦考利久期', 
-        '到期日', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
+        '到期日', '票面利率', '付息频率', '付息方式', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
     ]
 
     def process_sheet_df(df):
