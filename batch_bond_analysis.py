@@ -456,6 +456,10 @@ def main():
 
     for _, row in tqdm(deal_df.iterrows(), total=len(deal_df), desc="计算进度"):
         symbol = row['债券简称']
+        # 过滤掉债券简称中含有“贴现”两个字的债券
+        if '贴现' in symbol:
+            continue
+            
         search_key = symbol.replace(" ", "")
         meta = normalized_cache.get(search_key)
         
@@ -481,10 +485,12 @@ def main():
              res_row['交易量'] = vol
 
         if meta:
-            # 过滤掉同业存单，个人投资者无法购买
+            # 过滤掉同业存单和中期票据，个人投资者难以直接购买
             bond_type = meta.get('bond_type', '')
-            if '同业存单' in bond_type:
+            if any(kw in bond_type for kw in ['同业存单', '中期票据','无固定期限资本债券','二级资本工具']):
                 continue
+            
+            
 
             y_val = row['加权收益率'] if not pd.isna(row['加权收益率']) else row['最新收益率']
             
@@ -579,61 +585,33 @@ def main():
         '到期日', '票面利率', '付息频率', '付息方式', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
     ]
 
-    def process_sheet_df(df):
+    def process_sheet_df(df, sort_by='税后收益率'):
         # 确保列存在并按序排列
         existing_cols = [c for c in cols_order if c in df.columns]
         df_sorted = df[existing_cols].copy()
-        # 按税后收益率倒序排序
-        if '税后收益率' in df_sorted.columns:
-            df_sorted.sort_values('税后收益率', ascending=False, inplace=True)
+        # 排序逻辑
+        if sort_by in df_sorted.columns:
+            df_sorted.sort_values(sort_by, ascending=False, inplace=True)
         # 重命名表头
         df_sorted.rename(columns=header_mapping, inplace=True)
         return df_sorted
 
     # 分类逻辑
-    # 免税债：国债和地方政府债
     # 久期：短 (<= 0.5), 长 (>= 5), 中 (其他)
-    
-    is_tax_free = final_df['债券类型'].isin(['国债', '地方政府债'])
-    is_short = final_df['修正久期'] <= 0.5
-    is_long = final_df['修正久期'] >= 5
-    is_mid = (~is_short) & (~is_long)
-
-    # 准备各 Sheet 数据
-    sheets_data = {
-        "免税债": final_df[is_tax_free],
-        "其他债": final_df[~is_tax_free],
-        "全部债券": final_df
-    }
-
-    # 细分免税债
-    tax_free_df = sheets_data["免税债"]
-    short_tax_free = tax_free_df[tax_free_df['修正久期'] <= 0.5]
-    mid_tax_free = tax_free_df[(tax_free_df['修正久期'] > 0.5) & (tax_free_df['修正久期'] < 5)]
-    long_tax_free = tax_free_df[tax_free_df['修正久期'] >= 5]
-
-    # 细分其他债
-    other_df = sheets_data["其他债"]
-    short_other = other_df[other_df['修正久期'] <= 0.5]
-    mid_other = other_df[(other_df['修正久期'] > 0.5) & (other_df['修正久期'] < 5)]
-    long_other = other_df[other_df['修正久期'] >= 5]
+    short_bonds = final_df[final_df['修正久期'] <= 0.5]
+    mid_bonds = final_df[(final_df['修正久期'] > 0.5) & (final_df['修正久期'] < 5)]
+    long_bonds = final_df[final_df['修正久期'] >= 5]
 
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        # 按照用户最新要求，短期、中期、长期完全分开分 Sheet
-        # 1. 免税债系列
-        process_sheet_df(short_tax_free).to_excel(writer, sheet_name='短免税债', index=False)
-        process_sheet_df(mid_tax_free).to_excel(writer, sheet_name='中免税债', index=False)
-        process_sheet_df(long_tax_free).to_excel(writer, sheet_name='长免税债', index=False)
+        # 按照最新要求，不再区分免税和其他，仅按期限分 Sheet
+        process_sheet_df(short_bonds).to_excel(writer, sheet_name='短期债券', index=False)
+        process_sheet_df(mid_bonds).to_excel(writer, sheet_name='中期债券', index=False)
+        process_sheet_df(long_bonds).to_excel(writer, sheet_name='长期债券', index=False)
         
-        # 2. 其他债系列
-        process_sheet_df(short_other).to_excel(writer, sheet_name='短其他债', index=False)
-        process_sheet_df(mid_other).to_excel(writer, sheet_name='中其他债', index=False)
-        process_sheet_df(long_other).to_excel(writer, sheet_name='长其他债', index=False)
-        
-        # 3. 全部汇总
-        process_sheet_df(final_df).to_excel(writer, sheet_name='全部债券', index=False)
+        # 全部汇总：按交易量（成交额）降序排列
+        process_sheet_df(final_df, sort_by='交易量').to_excel(writer, sheet_name='全部债券', index=False)
 
-    print(f"5. 分析完成！结果已保存至: {output_file} (共 7 个 Sheet)")
+    print(f"5. 分析完成！结果已保存至: {output_file} (共 4 个 Sheet)")
 
 if __name__ == "__main__":
     main()
