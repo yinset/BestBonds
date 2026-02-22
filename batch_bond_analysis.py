@@ -11,9 +11,11 @@ import re
 import threading
 import random
 
+ONLINE_MODE = False # 设置为True以获取最新数据
+
 # 配置
 CACHE_DIR = "cache"
-CACHE_FILE = os.path.join(CACHE_DIR, "bond_metadata_cache.csv")
+CACHE_FILE_BASE = "bond_metadata_cache"  # 基础文件名，会自动放到日期文件夹中
 OUTPUT_FILE_BASE = "bond_analysis_results"  # 基础文件名，会自动加上日期
 CONCURRENT_THREADS = 1
 SAVE_INTERVAL = 10
@@ -45,6 +47,9 @@ def is_within_cache_window():
     判断当前时间是否处于交易日的 8:00-20:00 之间。
     如果在该窗口内，返回 True，表示应优先使用缓存。
     """
+    if ONLINE_MODE == False:
+        return False
+    
     now = datetime.now()
     
     # 1. 检查是否为周末
@@ -63,32 +68,42 @@ def is_within_cache_window():
 
 def get_latest_cache_date():
     """
-    从 cache 目录中寻找日期最近的成交数据缓存文件。
+    从 cache 目录中寻找日期最近的成交数据缓存文件夹。
     返回日期字符串 (YYYY-MM-DD) 和文件路径。
     """
     if not os.path.exists(CACHE_DIR):
         return None, None
-        
-    pattern = re.compile(r"bond_deal_cache_(\d{4}-\d{2}-\d{2})\.csv")
-    cache_files = []
+    
+    # 查找所有日期子文件夹
+    date_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})$")
+    date_dirs = []
     
     for f in os.listdir(CACHE_DIR):
-        match = pattern.match(f)
-        if match:
-            date_str = match.group(1)
-            cache_files.append((date_str, os.path.join(CACHE_DIR, f)))
-            
-    if not cache_files:
+        full_path = os.path.join(CACHE_DIR, f)
+        if os.path.isdir(full_path):
+            match = date_pattern.match(f)
+            if match:
+                date_str = match.group(1)
+                # 检查文件夹中是否有 bond_deal_cache.csv 文件
+                deal_cache_path = os.path.join(full_path, "bond_deal_cache.csv")
+                if os.path.exists(deal_cache_path):
+                    date_dirs.append(date_str)
+    
+    if not date_dirs:
         return None, None
-        
+    
     # 按日期排序，取最近的一个
-    cache_files.sort(key=lambda x: x[0], reverse=True)
-    return cache_files[0]
+    date_dirs.sort(reverse=True)
+    return date_dirs[0], date_dirs[0]
 
-def save_cache_to_file(cache_dict):
+def save_cache_to_file(cache_dict, settlement_dt_str):
     """安全保存缓存到文件"""
     if not cache_dict:
         return
+    # 创建日期子文件夹
+    date_cache_dir = os.path.join(CACHE_DIR, settlement_dt_str)
+    os.makedirs(date_cache_dir, exist_ok=True)
+    cache_file = os.path.join(date_cache_dir, f"{CACHE_FILE_BASE}.csv")
     with cache_lock:
         try:
             # 确保每个 metadata 字典里都有 symbol 字段
@@ -103,7 +118,7 @@ def save_cache_to_file(cache_dict):
             df = pd.DataFrame(data_list)
             if not df.empty:
                 # 使用 utf-8-sig 以便 Excel 打开不乱码，且能正确处理中文
-                df.to_csv(CACHE_FILE, index=False, encoding='utf-8-sig')
+                df.to_csv(cache_file, index=False, encoding='utf-8-sig')
         except Exception as e:
             print(f"保存缓存失败: {e}")
 
@@ -582,12 +597,12 @@ def create_homepage_sheet(writer, short_bonds_raw, mid_bonds_raw, long_bonds_raw
     remarks_text = """***************************如果不清楚存款利率变化会给债券带来怎样的风险，请直接选择无风险短期债券区***************************
 
 1.推荐在四大行和招商银行购买。更推荐在招商银行购买，菜单更人性化。
-2.目前接口只能抓取到机构间的数据和收益率，实际利率会有一点点点点降低，银行柜台债小概率会搜不到某个国债（未面向个人投资者），详情见银行。
+2.目前接口只能抓取到机构间的数据和收益率，个人购买的收益率可能会低0.1%，且小概率会搜不到某个国债（因为有些债不面向个人投资者）。
 3.如何度量债券风险：一笔钱距离你越久远，利率变化对你即将获得的所有钱产生的蝴蝶效应越大。时间是决定债券波动率的决定因素。
 4.久期是什么？为什么久期能够估算利率的杠杆率？
-假设你购买了30年期限的，持有到期的年收益率为2%的国债，购买额度100万。每一年会给2万元利息，最后一年连本带息付102万。
+假设你购买了30年期限的，持有到期的票面利率为2%的国债，购买额度100万。每一年会给2万元利息，最后一年连本带息付102万。
 
-让我们想象一块无重力木板，将一整条木板等分成30份相同长度后划分刻度，第0年不付息，0这个刻度不放钱，1-29年在每一个刻度上放n年后的2万元，最后一个刻度上放30年后的102万
+让我们想象一块无重力木板，将一整条木板等分成30份相同长度后划分刻度，第0年不付息，0这个刻度不放钱，1-29年在每一个刻度上放x年后的2万元，最后一个刻度上放30年后的102万
 然后，找到木板两边平衡的支点（重心），重心所在的刻度就是这段现金流的久期（久期单位为年）。这就是麦考利久期的物理意义——现金流时间的加权平均（权重是现金流的现值）。
 证明这段钱（受到利率的影响程度）等效于一个剩余期限为久期年的一笔钱。
 
@@ -615,7 +630,7 @@ n年后的2万现值为20000/(1+0.02)^n
     cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
 
     # 插入图片 (如果存在)
-    img_path = "duration_risk_heatmap.png"
+    img_path = "tools//duration_risk_heatmap.png"
     if os.path.exists(img_path):
         try:
             img = Image(img_path)
@@ -642,24 +657,38 @@ n年后的2万现值为20000/(1+0.02)^n
 def main():
     # 1. 确定日期和缓存策略
     now = datetime.now()
-    use_cache = is_within_cache_window()
+    
+    # 检查是否处于缓存窗口（交易日8:00-20:00）
+    in_cache_window = is_within_cache_window()  # ONLINE_MODE=False时返回False
     
     latest_date_str, latest_cache_path = get_latest_cache_date()
     
+    # 优先使用缓存的两种情况：
+    # 1. ONLINE_MODE = False（不允许任何网络抓取，必须用缓存）
+    # 2. 处于缓存窗口内（交易日8:00-20:00）
+    use_cache = (not ONLINE_MODE) or in_cache_window
+    
     # 获取结算日字符串
     if use_cache and latest_date_str:
-        # 在 8:00-20:00 窗口内，且存在历史缓存
+        # 在 8:00-20:00 窗口内，或 ONLINE_MODE=False，且存在历史缓存
         settlement_dt_str = latest_date_str
-        deal_cache_file = latest_cache_path
-        print(f"当前处于交易期 (交易日 8:00-20:00)，将使用历史最近交易日的缓存数据: {latest_date_str}")
-    else:
-        # 窗口外，或者没有任何缓存，尝试抓取今天的数据
-        settlement_dt_str = now.strftime("%Y-%m-%d")
-        deal_cache_file = os.path.join(CACHE_DIR, f"bond_deal_cache_{settlement_dt_str}.csv")
-        if not use_cache:
-            print(f"当前处于抓取窗口 (非交易日或非 8:00-20:00)，将尝试获取最新数据...")
+        # 使用日期子文件夹中的缓存文件
+        deal_cache_file = os.path.join(CACHE_DIR, latest_date_str, "bond_deal_cache.csv")
+        if not ONLINE_MODE:
+            print(f"ONLINE_MODE = False（禁止网络抓取），将使用历史最近交易日的缓存数据: {latest_date_str}")
         else:
-            print(f"未发现任何历史缓存，将尝试获取最新数据...")
+            print(f"当前处于交易期 (交易日 8:00-20:00)，将使用历史最近交易日的缓存数据: {latest_date_str}")
+    elif latest_date_str:
+        # 有历史缓存但不在缓存窗口内，且 ONLINE_MODE=True（允许抓取）
+        # 优先使用缓存，只在需要时再抓取
+        settlement_dt_str = latest_date_str
+        deal_cache_file = os.path.join(CACHE_DIR, latest_date_str, "bond_deal_cache.csv")
+        print(f"当前处于抓取窗口 (非交易日或非 8:00-20:00)，将优先使用历史缓存数据: {latest_date_str}")
+    else:
+        # 没有任何缓存，尝试抓取今天的数据
+        settlement_dt_str = now.strftime("%Y-%m-%d")
+        deal_cache_file = os.path.join(CACHE_DIR, settlement_dt_str, "bond_deal_cache.csv")
+        print(f"未发现任何历史缓存，将尝试获取最新数据...")
 
     output_file = f"{OUTPUT_FILE_BASE}_{settlement_dt_str}.xlsx"
     
@@ -674,16 +703,24 @@ def main():
             print(f"加载成交行情缓存失败: {e}，将重新抓取...")
 
     if deal_df is None:
-        print("1. 正在从接口获取最新成交行情数据...")
-        try:
-            deal_df = ak.bond_spot_deal()
-            print(f"成功获取 {len(deal_df)} 条成交记录。")
-            
-            # 保存到缓存
-            deal_df.to_csv(deal_cache_file, index=False, encoding='utf-8-sig')
-            print(f"已保存成交行情到缓存: {deal_cache_file}")
-        except Exception as e:
-            print(f"获取行情失败: {e}")
+        if ONLINE_MODE:
+            print("1. 正在从接口获取最新成交行情数据...")
+            try:
+                deal_df = ak.bond_spot_deal()
+                print(f"成功获取 {len(deal_df)} 条成交记录。")
+                
+                # 确保日期子文件夹存在
+                date_cache_dir = os.path.join(CACHE_DIR, settlement_dt_str)
+                os.makedirs(date_cache_dir, exist_ok=True)
+                
+                # 保存到缓存
+                deal_df.to_csv(deal_cache_file, index=False, encoding='utf-8-sig')
+                print(f"已保存成交行情到缓存: {deal_cache_file}")
+            except Exception as e:
+                print(f"获取行情失败: {e}")
+                return
+        else:
+            print("错误: ONLINE_MODE = False 且不存在可用缓存，无法获取数据。")
             return
 
     if deal_df is not None:
@@ -702,11 +739,13 @@ def main():
 
     # 3. 加载元数据缓存
     cache = {}
-    if os.path.exists(CACHE_FILE):
-        print(f"2. 正在加载本地缓存 {CACHE_FILE}...")
+    date_cache_dir = os.path.join(CACHE_DIR, settlement_dt_str)
+    metadata_cache_file = os.path.join(date_cache_dir, f"{CACHE_FILE_BASE}.csv")
+    if os.path.exists(metadata_cache_file):
+        print(f"2. 正在从本地缓存 {metadata_cache_file} 加载债券元数据...")
         try:
             # 使用 utf-8-sig 处理可能存在的 BOM 头
-            cache_df = pd.read_csv(CACHE_FILE, encoding='utf-8-sig')
+            cache_df = pd.read_csv(metadata_cache_file, encoding='utf-8-sig')
             if not cache_df.empty and 'symbol' in cache_df.columns:
                 cache_df = cache_df.dropna(subset=['symbol'])
                 cache_df = cache_df.drop_duplicates(subset=['symbol'], keep='last')
@@ -717,7 +756,11 @@ def main():
         except Exception as e:
             print(f"2. 加载缓存失败 ({e})。")
     else:
-        print("2. 未发现本地债券元数据缓存。")
+        print(f"2. 未找到匹配的元数据缓存文件: {metadata_cache_file}")
+        if ONLINE_MODE:
+            raise FileNotFoundError(f"找不到与 {settlement_dt_str} 对应的元数据缓存文件。请先运行程序生成缓存。")
+        else:
+            raise FileNotFoundError(f"ONLINE_MODE = False 且找不到与 {settlement_dt_str} 对应的元数据缓存文件。无法继续。")
 
     # 4. 检查是否需要抓取新债券的元数据
     # 建立一个规范化名称的索引，提高查找效率
@@ -725,37 +768,40 @@ def main():
     symbols_to_fetch = [s for s in deal_df['债券简称'].unique() if s.replace(" ", "") not in normalized_cache]
     
     if symbols_to_fetch:
-        print(f"3. 发现 {len(symbols_to_fetch)} 个新债券缺失元数据，正在抓取（并发数: {CONCURRENT_THREADS}）...")
-        processed_count = 0
-        success_count = 0
-        session = requests.Session()
-        # 预访问首页
-        try:
-            session.get("https://www.chinamoney.com.cn/chinese/zqjc/", timeout=15)
-        except:
-            pass
+        if ONLINE_MODE:
+            print(f"3. 发现 {len(symbols_to_fetch)} 个新债券缺失元数据，正在抓取（并发数: {CONCURRENT_THREADS}）...")
+            processed_count = 0
+            success_count = 0
+            session = requests.Session()
+            # 预访问首页
+            try:
+                session.get("https://www.chinamoney.com.cn/chinese/zqjc/", timeout=15)
+            except:
+                pass
+                
+            with ThreadPoolExecutor(max_workers=CONCURRENT_THREADS) as executor:
+                future_to_symbol = {executor.submit(get_bond_metadata_raw, s, session): s for s in symbols_to_fetch}
+                for future in tqdm(as_completed(future_to_symbol), total=len(symbols_to_fetch), desc="抓取进度"):
+                    symbol = future_to_symbol[future]
+                    processed_count += 1
+                    try:
+                        data = future.result()
+                        if data:
+                            cache[symbol] = data
+                            normalized_cache[symbol.replace(" ", "")] = data
+                            success_count += 1
+                        
+                        # 每处理 SAVE_INTERVAL 个，执行一次保存
+                        if processed_count % SAVE_INTERVAL == 0:
+                            save_cache_to_file(cache, settlement_dt_str)
+                    except Exception as e:
+                        pass
             
-        with ThreadPoolExecutor(max_workers=CONCURRENT_THREADS) as executor:
-            future_to_symbol = {executor.submit(get_bond_metadata_raw, s, session): s for s in symbols_to_fetch}
-            for future in tqdm(as_completed(future_to_symbol), total=len(symbols_to_fetch), desc="抓取进度"):
-                symbol = future_to_symbol[future]
-                processed_count += 1
-                try:
-                    data = future.result()
-                    if data:
-                        cache[symbol] = data
-                        normalized_cache[symbol.replace(" ", "")] = data
-                        success_count += 1
-                    
-                    # 每处理 SAVE_INTERVAL 个，执行一次保存
-                    if processed_count % SAVE_INTERVAL == 0:
-                        save_cache_to_file(cache)
-                except Exception as e:
-                    pass
-        
-        # 最终保存一次
-        save_cache_to_file(cache)
-        print(f"3. 抓取完成。本次成功: {success_count}, 失败: {len(symbols_to_fetch) - success_count}。当前总缓存: {len(cache)} 条。")
+            # 最终保存一次
+            save_cache_to_file(cache, settlement_dt_str)
+            print(f"3. 抓取完成。本次成功: {success_count}, 失败: {len(symbols_to_fetch) - success_count}。当前总缓存: {len(cache)} 条。")
+        else:
+            print(f"3. ONLINE_MODE = False，禁止抓取新债券元数据。缺少 {len(symbols_to_fetch)} 个债券的元数据，将跳过这些债券。")
     else:
         print("3. 所有成交债券的元数据已在缓存中，跳过抓取。")
 
@@ -775,16 +821,20 @@ def main():
         search_key = symbol.replace(" ", "")
         meta = normalized_cache.get(search_key)
         
-        # 如果缓存没有，尝试实时抓取
+        # 如果缓存没有，尝试实时抓取（仅当ONLINE_MODE=True时）
         if not meta:
-            tqdm.write(f"缓存未命中: {symbol}，尝试实时抓取...")
-            meta = get_bond_metadata_raw(symbol, session=session)
-            if meta:
-                cache[symbol] = meta
-                normalized_cache[search_key] = meta
-                # 抓取成功后顺便存一下文件，防止中途退出
-                if len(cache) % SAVE_INTERVAL == 0:
-                    save_cache_to_file(cache)
+            if ONLINE_MODE:
+                tqdm.write(f"缓存未命中: {symbol}，尝试实时抓取...")
+                meta = get_bond_metadata_raw(symbol, session=session)
+                if meta:
+                    cache[symbol] = meta
+                    normalized_cache[search_key] = meta
+                    # 抓取成功后顺便存一下文件，防止中途退出
+                    if len(cache) % SAVE_INTERVAL == 0:
+                        save_cache_to_file(cache, settlement_dt_str)
+            else:
+                # ONLINE_MODE=False 时不抓取，债券将被跳过
+                pass
         
         res_row = row.to_dict()
         
@@ -856,7 +906,7 @@ def main():
         results.append(res_row)
 
     # 最终保存一次缓存
-    save_cache_to_file(cache)
+    save_cache_to_file(cache, settlement_dt_str)
 
     # 5. 分类并导出
     print("5. 正在对债券进行分类并排序...")
