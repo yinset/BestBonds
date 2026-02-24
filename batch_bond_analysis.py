@@ -282,12 +282,11 @@ def get_coupon_dates(settlement_date, maturity_date, frequency_str):
     coupon_dates.sort()
     return coupon_dates, last_coupon_date
 
-def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年', settlement_date=None, bond_type='', coupon_type=''):
+def calculate_remaining_days(maturity_date, settlement_date=None):
     """
-    计算债券久期、剩余期限（年）和剩余天数（优化版）
+    计算债券剩余天数（简化版，不计算久期）
     """
     try:
-        # 1. 初始化日期
         if settlement_date is None:
             settlement_dt = datetime.now()
         elif isinstance(settlement_date, str):
@@ -295,109 +294,190 @@ def calculate_duration(yield_val, coupon_rate, maturity_date, frequency_str='年
         else:
             settlement_dt = settlement_date
             
-        # 统一处理为日期，避免时间差导致的计算偏差
         if hasattr(settlement_dt, 'replace'):
             settlement_dt = settlement_dt.replace(hour=0, minute=0, second=0, microsecond=0)
             
         if not maturity_date or maturity_date == '---':
-            return None, None, None, None
+            return None
             
         if isinstance(maturity_date, str):
             maturity_dt = datetime.strptime(maturity_date, '%Y-%m-%d')
         else:
             maturity_dt = maturity_date
             
-        # 统一去除时间部分
         if hasattr(maturity_dt, 'replace'):
             maturity_dt = maturity_dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        # 2. 剩余天数 (到期日 - 结算日)
         delta = maturity_dt - settlement_dt
         days_to_maturity = delta.days
         
-        # 剩余年限 (用于久期计算中的时间份额)
-        years_to_maturity = days_to_maturity / 365.25
-        
         if days_to_maturity <= 0:
-            return 0, 0, 0, 0
-
-        # 3. 收益率合理性检查
-        if not isinstance(yield_val, (int, float, np.float64)) or pd.isna(yield_val) or yield_val == 0:
-             # 如果收益率无效，仅返回剩余天数和粗略期限
-             return years_to_maturity, None, None, days_to_maturity
-
-        if yield_val < -10 or yield_val > 100:  # 收益率范围检查
-            warnings.warn(f"到期收益率 {yield_val}% 可能不合理")
-
-        # 4. 确定计算惯例
-        convention = 'Act/Act' if any(bt in bond_type for bt in ['国债', '地方政府债']) else 'Act/365'
-        
-        # 5. 生成现金流时间点
-        # 判断是否为贴现或零息债券
-        is_discount_or_zero = False
-        if coupon_type and any(kw in coupon_type for kw in ['贴现', '零息']):
-            is_discount_or_zero = True
-
-        freq_map = {'年': 1, '半年': 2, '季': 4, '按年付息': 1, '半年付息': 2, '按季付息': 4}
-        m = freq_map.get(frequency_str, 1)
-
-        if is_discount_or_zero:
-            coupon_dates = [maturity_dt]
-            last_coupon_date = settlement_dt # 简化处理，应计利息为0
-            coupon_per_period = 0
-            cash_flows = np.array([100.0])
-        else:
-            coupon_dates, last_coupon_date = get_coupon_dates(settlement_dt, maturity_dt, frequency_str)
-            if not coupon_dates: # 异常情况
-                return years_to_maturity, None, None, days_to_maturity
+            return 0
             
-            # 每期利息
-            coupon_per_period = (coupon_rate * 100) / m
-            cash_flows = np.array([coupon_per_period] * len(coupon_dates))
-            cash_flows[-1] += 100 # 加上本金
-
-        # 6. 计算各现金流的时间份额 (years from settlement)
-        times = np.array([day_count_fraction(settlement_dt, d, convention) for d in coupon_dates])
-        
-        # 7. 计算应计利息 (Accrued Interest)
-        next_coupon_date = coupon_dates[0]
-        days_since_last = (settlement_dt - last_coupon_date).days
-        days_in_period = (next_coupon_date - last_coupon_date).days
-        
-        accrued_interest = coupon_per_period * (days_since_last / days_in_period) if days_in_period > 0 else 0
-        
-        # 8. 计算价格和久期
-        y = yield_val / 100 
-        
-        # 中国市场通常采用复利计算（剩余期限 > 1年）
-        # 如果剩余期限 <= 1年，通常采用单利 (price = (principal + interest) / (1 + y * t))
-        years_to_mat = times[-1]
-        
-        if years_to_mat > 1:
-            # 复利折现
-            discount_factors = 1 / (1 + y / m) ** (times * m)
-        else:
-            # 单利折现 (针对最后一次现金流)
-            discount_factors = 1 / (1 + y * times)
-            
-        pv_cfs = cash_flows * discount_factors
-        full_price = np.sum(pv_cfs)
-        
-        if full_price <= 0:
-            return years_to_mat, None, None, days_to_maturity
-            
-        macaulay_duration = np.sum(times * pv_cfs) / full_price
-        
-        if years_to_mat > 1:
-            modified_duration = macaulay_duration / (1 + y / m)
-        else:
-            # 短期债修正久期
-            modified_duration = macaulay_duration / (1 + y) 
-            
-        return years_to_mat, macaulay_duration, modified_duration, days_to_maturity
+        return days_to_maturity
     except Exception as e:
-        # traceback.print_exc() # 调试用
-        return None, None, None, None
+        return None
+
+def create_homepage_sheet_simple(writer, bonds_df, header_mapping, cols_order):
+    """
+    创建主页sheet，展示两个表格：
+    1. 左侧：2个月至1年期限的债券（按税后收益率排序）
+    2. 右侧：1年至3年期限的国债（按税后收益率排序）
+    移除久期相关的复杂概念
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    
+    # 创建工作表
+    ws = writer.book.create_sheet("主页", 0)  # 插入到第一个位置
+    
+    # 处理DataFrame，按税后收益率排序
+    def prepare_df(df):
+        if df.empty:
+            return df
+        existing_cols = [c for c in cols_order if c in df.columns]
+        df_prepared = df[existing_cols].copy()
+        df_prepared.sort_values('税后年收益率', ascending=False, inplace=True)
+        df_prepared.rename(columns=header_mapping, inplace=True)
+        return df_prepared
+    
+    # 筛选条件
+    # 2个月至1年期限：60天到365天
+    short_term_bonds = bonds_df[(bonds_df['剩余天数'] >= 60) & (bonds_df['剩余天数'] <= 365)]
+    # 1年至3年期限：365天到1095天（1年=365天，3年=1095天）
+    mid_term_bonds = bonds_df[(bonds_df['剩余天数'] > 365) & (bonds_df['剩余天数'] <= 1095)]
+    
+    # 过滤：与排名第一的债券的税后收益率相差33%以上的债券需要过滤掉
+    def filter_by_yield_range(df):
+        if df.empty:
+            return df
+        max_yield = df['税后年收益率'].max()
+        if max_yield is None or pd.isna(max_yield):
+            return df
+        min_yield = max_yield * 0.67  # 相差33%，即保留67%以上的
+        return df[df['税后年收益率'] >= min_yield]
+    
+    short_term_bonds = filter_by_yield_range(short_term_bonds)
+    mid_term_bonds = filter_by_yield_range(mid_term_bonds)
+    
+    # 选取成交额前5的债券
+    if not short_term_bonds.empty and '交易量' in short_term_bonds.columns:
+        short_term_bonds = short_term_bonds.dropna(subset=['交易量'])
+        short_term_bonds = short_term_bonds.nlargest(10, '交易量')
+    if not mid_term_bonds.empty and '交易量' in mid_term_bonds.columns:
+        mid_term_bonds = mid_term_bonds.dropna(subset=['交易量'])
+        mid_term_bonds = mid_term_bonds.nlargest(10, '交易量')
+    
+    short_term_bonds = prepare_df(short_term_bonds)
+    mid_term_bonds = prepare_df(mid_term_bonds)
+    
+    # 定义样式
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    title_font = Font(bold=True, size=12)
+    border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    center_alignment = Alignment(horizontal='center', vertical='center')
+    left_alignment = Alignment(horizontal='left', vertical='center')
+    
+    # 收益率颜色填充
+    yield_fill = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid")  # 浅黄色
+    
+    # 显示的列（移除久期相关列，移除票面利率和债券类型，隐藏成交额列）
+    display_cols = ['债券简称', '税后年收益率', '剩余期限', '到期日']
+    
+    def write_bond_table(ws, start_row, start_col, title, bonds_df, max_rows=20):
+        """在指定位置写入债券表格"""
+        # 标题
+        ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=start_col+len(display_cols)-1)
+        cell = ws.cell(row=start_row, column=start_col)
+        cell.value = title
+        cell.font = title_font
+        cell.alignment = center_alignment
+        cell.fill = header_fill
+        cell.font = header_font
+        
+        # 写入表头
+        header_row = start_row + 1
+        for idx, col_name in enumerate(display_cols):
+            cell = ws.cell(row=header_row, column=start_col+idx)
+            cell.value = col_name
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_alignment
+            cell.border = border
+        
+        # 写入数据
+        if bonds_df.empty:
+            ws.merge_cells(start_row=header_row+1, start_column=start_col, end_row=header_row+1, end_column=start_col+len(display_cols)-1)
+            cell = ws.cell(row=header_row+1, column=start_col)
+            cell.value = "暂无符合条件的债券"
+            cell.alignment = center_alignment
+            return header_row + 2
+        else:
+            data_rows = min(len(bonds_df), max_rows)
+            for row_idx in range(data_rows):
+                excel_row = header_row + 1 + row_idx
+                for col_idx, col_name in enumerate(display_cols):
+                    cell = ws.cell(row=excel_row, column=start_col+col_idx)
+                    
+                    if col_name in bonds_df.columns:
+                        value = bonds_df.iloc[row_idx][col_name]
+                        # 处理NaN值
+                        if pd.isna(value):
+                            cell.value = '---'
+                        elif isinstance(value, (int, float)):
+                            if col_name == '税后年收益率':
+                                cell.value = round(value, 4)
+                            elif col_name == '成交额(亿元)':
+                                cell.value = int(value) if isinstance(value, float) and value.is_integer() else value
+                            else:
+                                cell.value = value
+                        else:
+                            cell.value = str(value)
+                    else:
+                        cell.value = '---'
+                    
+                    # 设置样式
+                    cell.border = border
+                    cell.alignment = center_alignment if col_idx < 2 else left_alignment
+                    
+                    # 给税后年收益率加颜色
+                    if col_name == '税后年收益率':
+                        cell.fill = yield_fill
+            
+            return header_row + data_rows + 2
+    
+    # 写入上方表格：2个月至1年期限
+    first_table_end_row = write_bond_table(ws, 1, 1, "2个月至1年期限", short_term_bonds)
+    
+    # 写入下方表格：1年至3年期限国债（在第一个表格下方）
+    second_table_end_row = write_bond_table(ws, first_table_end_row, 1, "1年至3年期限", mid_term_bonds)
+    
+    # 添加备注区域（在第二个表格下方）
+    notes_row = second_table_end_row
+    notes_text = "备注：\n1. 优先按照投资天数需求选择，再根据税后收益率排名获得购买结果。\n2. 所列债券日成交额均大于10亿，流动性有保证。"
+    ws.merge_cells(start_row=notes_row, start_column=1, end_row=notes_row+2, end_column=len(display_cols))
+    cell = ws.cell(row=notes_row, column=1)
+    cell.value = notes_text
+    cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    cell.font = Font(size=10)
+    
+    # 设置列宽
+    col_widths = [20, 12, 15, 12]
+    for idx, width in enumerate(col_widths):
+        ws.column_dimensions[get_column_letter(idx+1)].width = width
+    
+    # 设置行高
+    ws.row_dimensions[1].height = 25
+    for row in range(2, ws.max_row + 1):
+        ws.row_dimensions[row].height = 20
+
 
 def create_homepage_sheet(writer, short_bonds_raw, mid_bonds_raw, long_bonds_raw, header_mapping, cols_order):
     """
@@ -849,14 +929,10 @@ def main():
         if meta:
             y_val = row['加权收益率'] if not pd.isna(row['加权收益率']) else row['最新收益率']
             
-            years, mac_dur, mod_dur, days = calculate_duration(
-                yield_val=y_val,
-                coupon_rate=meta['coupon_rate'],
+            # 使用简化版的剩余天数计算
+            days = calculate_remaining_days(
                 maturity_date=meta['maturity_date'],
-                frequency_str=meta['frequency'],
-                settlement_date=settlement_dt_str,
-                bond_type=meta.get('bond_type', ''),
-                coupon_type=meta.get('coupon_type', '')
+                settlement_date=settlement_dt_str
             )
             
             # 处理 "够一年则进位一年" 的逻辑：366天 -> 1年1天
@@ -876,8 +952,6 @@ def main():
             res_row['付息方式'] = meta.get('coupon_type', '---')
             res_row['剩余期限_格式化'] = tenor_display
             res_row['剩余天数'] = days
-            res_row['麦考利久期'] = mac_dur
-            res_row['修正久期'] = mod_dur
             res_row['债券类型'] = meta.get('bond_type', '未知')
 
             # 计算税后年收益率
@@ -898,8 +972,6 @@ def main():
             res_row['付息方式'] = None
             res_row['剩余期限_格式化'] = None
             res_row['剩余天数'] = None
-            res_row['麦考利久期'] = None
-            res_row['修正久期'] = None
             res_row['税后年收益率'] = None
             res_row['债券类型'] = None
             
@@ -915,14 +987,12 @@ def main():
         print("未发现符合条件的债券数据。")
         return
 
-    # 定义列映射和顺序
+    # 定义列映射和顺序（移除久期相关列）
     header_mapping = {
         '债券简称': '债券简称',
         '债券类型': '债券类型',
         '剩余天数': '剩余天数',
         '剩余期限_格式化': '剩余期限',
-        '修正久期': '修正久期',
-        '麦考利久期': '麦考利久期',
         '税后年收益率': '税后年收益率',
         '到期日': '到期日',
         '票面利率': '票面利率',
@@ -936,7 +1006,7 @@ def main():
     }
     
     cols_order = [
-        '债券简称', '债券类型', '剩余天数', '剩余期限_格式化', '税后年收益率', '修正久期', '麦考利久期', 
+        '债券简称', '债券类型', '剩余天数', '剩余期限_格式化', '税后年收益率', 
         '到期日', '票面利率', '付息频率', '付息方式', '加权收益率', '最新收益率', '成交净价', '交易量', '成交时间'
     ]
 
@@ -951,23 +1021,11 @@ def main():
         df_sorted.rename(columns=header_mapping, inplace=True)
         return df_sorted
 
-    # 分类逻辑
-    # 久期：短 (<= 0.5), 长 (>= 5), 中 (其他)
-    short_bonds = final_df[final_df['修正久期'] <= 0.5]
-    mid_bonds = final_df[(final_df['修正久期'] > 0.5) & (final_df['修正久期'] < 5)]
-    long_bonds = final_df[final_df['修正久期'] >= 5]
-
+    # 筛选和展示逻辑在 create_homepage_sheet_simple 函数内部处理
+    
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        # 先创建主页sheet
-        create_homepage_sheet(writer, short_bonds, mid_bonds, long_bonds, header_mapping, cols_order)
-        
-        # 按照最新要求，不再区分免税和其他，仅按期限分 Sheet
-        process_sheet_df(short_bonds).to_excel(writer, sheet_name='短期债券', index=False)
-        process_sheet_df(mid_bonds).to_excel(writer, sheet_name='中期债券', index=False)
-        process_sheet_df(long_bonds).to_excel(writer, sheet_name='长期债券', index=False)
-        
-        # 全部汇总：按交易量（成交额）降序排列
-        process_sheet_df(final_df, sort_by='交易量').to_excel(writer, sheet_name='全部债券', index=False)
+        # 创建主页sheet，展示两个表格：2个月至1年和1年至3年期限债券（按税后收益率排序）
+        create_homepage_sheet_simple(writer, final_df, header_mapping, cols_order)
 
     print(f"6. 分析完成！结果已保存至: {output_file}")
 
