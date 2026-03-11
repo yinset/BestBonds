@@ -23,7 +23,6 @@
 2.  **深度元数据分析**：自动从中国货币网（ChinaMoney）抓取债券的详细信息（起息日、到期日、票面利率、付息频率等）。
 3.  **专业指标计算**：
     *   **剩余期限**：精确计算到天，并转换为易读的“X年Y天”格式。
-    *   **久期计算**：自动计算麦考利久期（Macaulay Duration）和修正久期（Modified Duration），帮助评估利率风险。
     *   **收益率分析**：基于加权收益率和最新收益率进行评估。
 4.  **收益率曲线可视化**：
     *   绘制 1 年期及 30 年期国债的历史收益率走势图。
@@ -48,10 +47,9 @@ pip install akshare pandas requests tqdm matplotlib openpyxl
 python batch_bond_analysis.py
 ```
 *   **输出结果**：将生成 `bond_analysis_results_YYYY-MM-DD.xlsx` 供查看。
-*   **配置项**：可在脚本顶部修改 `SETTLEMENT_DATE`（结算日）或 `CONCURRENT_THREADS`（并发数）。
 
 ### **3. 查看收益率走势**
-运行绘图脚本，直观查看国债收益率变化：
+tools文件夹运行绘图脚本，直观查看国债收益率变化：
 
 ```bash
 python plot_bond_yield_curve.py
@@ -62,20 +60,9 @@ python plot_bond_yield_curve.py
 
 ---
 
-## **项目结构** 📂
-
-*   [batch_bond_analysis.py](file:///c:/Users/11825/OneDrive/BestBonds/batch_bond_analysis.py)：核心分析逻辑，负责抓取数据、计算久期并导出 Excel。
-*   [plot_bond_yield_curve.py](file:///c:/Users/11825/OneDrive/BestBonds/plot_bond_yield_curve.py)：绘图工具，展示国债收益率的历史趋势与现状。
-*   `bond_metadata_cache.csv`：债券元数据缓存。
-*   `china_bond_yield_cache.csv`：中债收益率历史数据缓存。
-
----
-
 ## **投资提醒** ⚠️
 
 *   **利率风险**：债券价格与利率成反比，久期越长，受利率波动影响越大。
-*   **信用风险**：本项目侧重于国债及高流动性债券，请在投资前仔细甄别发行人信用。
-*   **流动性风险**：虽然脚本筛选了成交量大的债券，但实际交易中仍需注意市场深度。
 
 ---
 
