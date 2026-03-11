@@ -440,52 +440,47 @@ class ExcelReporter:
                        header_mapping: Dict, cols_order: List[str]) -> None:
         """生成Excel报表"""
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            # 第一张表格：小于六个月
-            self._create_filtered_sheet(writer, "小于6个月", "小于6个月到期债券", 
-                                       final_df, 0, 180, header_mapping, cols_order, 0)
-            # 第二张表格：小于一年
-            self._create_filtered_sheet(writer, "小于1年", "小于1年到期债券", 
-                                       final_df, 0, 365, header_mapping, cols_order, 1)
-            # 第三张表格：小于三年
-            self._create_filtered_sheet(writer, "小于3年", "小于3年到期债券", 
-                                       final_df, 0, 1095, header_mapping, cols_order, 2)
+            self._create_combined_sheet(writer, "主页", final_df, header_mapping, cols_order)
             
             # 移除默认的 "Sheet"
             if "Sheet" in writer.book.sheetnames:
                 del writer.book["Sheet"]
 
-    def _create_filtered_sheet(self, writer, sheet_name: str, title: str, bonds_df: pd.DataFrame,
-                               min_days: int, max_days: int,
-                               header_mapping: Dict, cols_order: List[str], index: int) -> None:
-        """创建过滤后的sheet"""
+    def _create_combined_sheet(self, writer, sheet_name: str, bonds_df: pd.DataFrame,
+                               header_mapping: Dict, cols_order: List[str]) -> None:
+        """在同一个sheet中创建三张表格"""
         from openpyxl.utils import get_column_letter
-        from openpyxl.styles import Alignment
         
-        ws = writer.book.create_sheet(sheet_name, index)
-        
-        # 数据准备
-        filtered_bonds = self._filter_bonds(bonds_df, min_days, max_days)
-        filtered_bonds = self._apply_filters(filtered_bonds)
-        filtered_bonds = self._prepare_df(filtered_bonds, header_mapping, cols_order)
-        
-        # 样式定义
+        ws = writer.book.create_sheet(sheet_name, 0)
         styles = self._get_styles()
         display_cols = ['债券简称', '税后年收益率', '剩余期限', '到期日']
         
-        # 写入表格
-        self._write_bond_table(ws, 1, 1, title, filtered_bonds, display_cols, styles)
+        current_row = 1
+        
+        # 定义过滤配置
+        filters = [
+            ("小于6个月到期债券", 0, 180),
+            ("小于1年到期债券", 0, 365),
+            ("小于3年到期债券", 0, 1095)
+        ]
+        
+        for title, min_days, max_days in filters:
+            df = self._filter_bonds(bonds_df, min_days, max_days)
+            df = self._apply_filters(df)
+            df = self._prepare_df(df, header_mapping, cols_order)
+            current_row = self._write_bond_table(ws, current_row, 1, title, df, display_cols, styles)
         
         # 备注
-        self._write_notes(ws, ws.max_row + 2, display_cols)
+        self._write_notes(ws, current_row, display_cols)
         
         # 列宽设置
         for idx, width in enumerate([20, 12, 15, 12]):
             ws.column_dimensions[get_column_letter(idx + 1)].width = width
         
-        ws.row_dimensions[1].height = 25
-        for row in range(2, ws.max_row + 1):
+        # 行高设置
+        for row in range(1, ws.max_row + 1):
             ws.row_dimensions[row].height = 20
-
+        
     def _filter_bonds(self, df: pd.DataFrame, min_days: int, max_days: int) -> pd.DataFrame:
         """筛选债券"""
         return df[(df['剩余天数'] >= min_days) & (df['剩余天数'] <= max_days)].copy()
@@ -606,7 +601,7 @@ class ExcelReporter:
         ws.merge_cells(start_row=start_row, start_column=1,
                        end_row=start_row + 2, end_column=len(display_cols))
         cell = ws.cell(row=start_row, column=1)
-        cell.value = "备注：\n1. 优先按照投资天数需求选择，再根据税后收益率排名获得购买结果。\n2. 所列债券日成交额均大于10亿，流动性有保证。"
+        cell.value = "备注：\n1. 优先按照投资天数需求选择，再根据税后收益率排名获得购买结果。\n2. 所列债券日成交额均大于10亿，流动性有保证。\n3. 推荐购买6个月内的债券，属于无风险的现金等价物。"
         cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
         cell.font = Font(size=10)
 
