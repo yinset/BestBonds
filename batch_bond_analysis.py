@@ -655,8 +655,10 @@ class BondAnalysisApp:
                 print(f"当前处于交易期 (交易日 8:00-20:00)，将使用历史最近交易日的缓存数据: {latest_date_str}")
             return latest_date_str
         elif latest_date_str:
-            print(f"当前处于抓取窗口，将优先使用历史缓存数据: {latest_date_str}")
-            return latest_date_str
+            # 抓取窗口：优先使用最新抓取数据而不是历史缓存数据
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            print(f"当前处于抓取窗口，将优先使用最新抓取数据: {today_str}")
+            return today_str
         else:
             print(f"未发现任何历史缓存，将尝试获取最新数据...")
             return datetime.now().strftime("%Y-%m-%d")
